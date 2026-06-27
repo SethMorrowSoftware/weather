@@ -28,3 +28,58 @@ jobs:
 
       - name: Run tests
         run: python test_weather_mqtt.py
+
+  # End-to-end installer smoke test on the runner VM, which has real systemd.
+  # Proves `sudo ./install.sh` brings up Mosquitto + both services and that the
+  # dashboard and broker actually work.
+  install-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run the installer (non-interactive)
+        run: sudo ./install.sh
+
+      - name: Services are active
+        run: |
+          fail=0
+          for svc in mosquitto weather-mqtt weather-webui; do
+            if sudo systemctl is-active --quiet "$svc"; then
+              echo "✓ $svc active"
+            else
+              echo "✗ $svc NOT active"; fail=1
+              sudo systemctl status "$svc" --no-pager || true
+              sudo journalctl -u "$svc" --no-pager -n 60 || true
+            fi
+          done
+          exit $fail
+
+      - name: Dashboard responds
+        run: |
+          ok=0
+          for i in $(seq 1 30); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/healthz || echo 000)
+            echo "attempt $i: /healthz -> $code"
+            if [ "$code" = "200" ]; then ok=1; break; fi
+            sleep 2
+          done
+          if [ "$ok" != 1 ]; then
+            echo "dashboard never became healthy"
+            sudo journalctl -u weather-webui --no-pager -n 60 || true
+            exit 1
+          fi
+          curl -fsS http://localhost:8080/ >/dev/null && echo "✓ dashboard reachable"
+          curl -fsS http://localhost:8080/rules >/dev/null && echo "✓ rules page reachable"
+
+      - name: MQTT broker round-trips
+        run: |
+          mosquitto_pub -h localhost -t citest/x -m hello -r
+          got=$(mosquitto_sub -h localhost -t citest/x -C 1 -W 5)
+          echo "received: $got"
+          [ "$got" = "hello" ] && echo "✓ broker round-trip OK"
+
+      - name: Re-running the installer is idempotent
+        run: |
+          sudo ./install.sh
+          sudo systemctl is-active --quiet weather-webui && echo "✓ still healthy after re-run"

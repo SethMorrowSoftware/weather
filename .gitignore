@@ -6,3 +6,7 @@ weather_state.json
 config.yaml.bak
 *.tmp
 venv/
+# Python packaging artifacts
+build/
+dist/
+*.egg-info/
