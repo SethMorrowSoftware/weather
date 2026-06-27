@@ -15,6 +15,7 @@ import argparse
 import functools
 import hmac
 import json
+import os
 from pathlib import Path
 
 from flask import Flask, request, url_for, render_template_string, Response, jsonify
@@ -509,6 +510,28 @@ SETTINGS = """
 </div>
 
 <div class="card">
+  <h3>Slack alerts</h3>
+  <p class="muted">Get a Slack message if the MQTT broker stays unreachable. Needs a
+   Slack <b>bot token</b> (<code>xoxb-…</code>) with <code>chat:write</code>, invited to the channel.</p>
+  <div class="row">
+    <div><label>Enabled</label>
+      <select name="slack_enabled">
+        <option value="false" {{ 'selected' if not c.slack.enabled }}>false</option>
+        <option value="true" {{ 'selected' if c.slack.enabled }}>true</option>
+      </select></div>
+    <div><label>Alert after broker down for <span class="hint">(minutes)</span></label>
+      <input name="slack_minutes" value="{{ c.slack.broker_unreachable_minutes }}"></div>
+  </div>
+  <div class="row">
+    <div><label>Channel <span class="hint">(#name or ID)</span></label>
+      <input name="slack_channel" value="{{ c.slack.channel or '' }}" placeholder="#alerts"></div>
+    <div><label>Bot token <span class="hint">(or set SLACK_BOT_TOKEN in the env)</span></label>
+      <input name="slack_token" type="password" value="" autocomplete="new-password"
+        placeholder="{{ '•••••• — leave blank to keep' if c.slack.bot_token else 'xoxb-… (env takes precedence)' }}"></div>
+  </div>
+</div>
+
+<div class="card">
   <h3>Web interface</h3>
   <div class="row">
     <div><label>Bind host <span class="hint">(0.0.0.0 = all, 127.0.0.1 = local only)</span></label>
@@ -597,6 +620,23 @@ def settings():
             mq["retain"] = f.get("mqtt_retain", "true") == "true"
             mq["status_topic"] = _qstr(f.get("status_topic", "").strip())
 
+            slack = cfg.setdefault("slack", {})
+            slack["enabled"] = f.get("slack_enabled") == "true"
+            slack["channel"] = _qstr(f.get("slack_channel", "").strip())
+            mins_raw = (f.get("slack_minutes") or "").strip()
+            slack["broker_unreachable_minutes"] = (
+                _ranged("Slack alert delay", mins_raw, 1, 10080, integer=True)
+                if mins_raw else int(slack.get("broker_unreachable_minutes", 60)))
+            if f.get("slack_token", ""):              # blank = keep stored token
+                slack["bot_token"] = _qstr(f.get("slack_token"))
+            slack.setdefault("bot_token", "")
+            if slack["enabled"] and not slack["channel"]:
+                raise ValueError("Slack alerts need a channel (e.g. #alerts)")
+            if (slack["enabled"] and not str(slack.get("bot_token") or "")
+                    and not os.environ.get("SLACK_BOT_TOKEN")):
+                raise ValueError("Slack alerts need a bot token (set it here or as "
+                                 "the SLACK_BOT_TOKEN env var)")
+
             web = cfg.setdefault("web", {})
             web["host"] = _qstr(f.get("web_host", "").strip() or "0.0.0.0")
             web["port"] = _ranged("Web port", f.get("web_port"), 1, 65535, integer=True)
@@ -634,6 +674,11 @@ def settings():
     webd.setdefault("port", 8080)
     webd.setdefault("username", "")
     webd.setdefault("password", "")
+    sld = cfg.setdefault("slack", {})
+    sld.setdefault("enabled", False)
+    sld.setdefault("channel", "")
+    sld.setdefault("bot_token", "")
+    sld.setdefault("broker_unreachable_minutes", 60)
     body = render_template_string(SETTINGS, c=cfg)
     return page(body, page="settings", msg=msg, msgclass=msgclass,
                 title="Settings · Precipitation → MQTT")

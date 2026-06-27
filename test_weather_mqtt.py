@@ -134,6 +134,58 @@ def test_load_config_coerces_boolean_payloads(tmp=None):
         os.unlink(p)
 
 
+def test_broker_watch_alert_and_recovery():
+    from datetime import datetime, timedelta, timezone
+    t0 = datetime(2026, 6, 27, 12, 0, tzinfo=timezone.utc)
+    bw = w.BrokerWatch(threshold_minutes=60)
+    assert bw.update(True, t0) is None                                  # healthy
+    assert bw.update(False, t0) is None                                 # just went down
+    assert bw.update(False, t0 + timedelta(minutes=59)) is None         # not yet
+    assert bw.update(False, t0 + timedelta(minutes=61)) == "down"       # threshold crossed
+    assert bw.update(False, t0 + timedelta(minutes=120)) is None        # no re-alert
+    assert bw.update(True, t0 + timedelta(minutes=121)) == "recovered"  # back up
+    assert bw.update(True, t0 + timedelta(minutes=122)) is None         # steady
+
+
+def test_broker_watch_brief_flap_no_alert():
+    from datetime import datetime, timedelta, timezone
+    t0 = datetime(2026, 6, 27, 12, 0, tzinfo=timezone.utc)
+    bw = w.BrokerWatch(threshold_minutes=60)
+    bw.update(False, t0)
+    # recovers before the threshold -> never alerted, so no "recovered" either
+    assert bw.update(True, t0 + timedelta(minutes=5)) is None
+
+
+def test_notify_slack_disabled_is_noop():
+    # disabled, and missing token/channel: both must short-circuit without raising
+    assert w.notify_slack({"enabled": False}, "x") is False
+    assert w.notify_slack({"enabled": True, "channel": "", "bot_token": ""}, "x") is False
+
+
+def test_slack_token_env_precedence():
+    import os
+    saved = os.environ.get("SLACK_BOT_TOKEN")
+    try:
+        os.environ["SLACK_BOT_TOKEN"] = "xoxb-env"
+        assert w.slack_token({"bot_token": "xoxb-config"}) == "xoxb-env"
+        del os.environ["SLACK_BOT_TOKEN"]
+        assert w.slack_token({"bot_token": "xoxb-config"}) == "xoxb-config"
+    finally:
+        if saved is not None:
+            os.environ["SLACK_BOT_TOKEN"] = saved
+        else:
+            os.environ.pop("SLACK_BOT_TOKEN", None)
+
+
+def test_validate_config_slack_defaults_and_clamp():
+    cfg = w.validate_config(_min_cfg(slack={"enabled": True, "broker_unreachable_minutes": 0}))
+    assert cfg["slack"]["enabled"] is True
+    assert cfg["slack"]["broker_unreachable_minutes"] == 1   # clamped up from 0
+    cfg2 = w.validate_config(_min_cfg())
+    assert cfg2["slack"] == {"enabled": False, "bot_token": "", "channel": "",
+                             "broker_unreachable_minutes": 60}
+
+
 def test_setup_wizard_renders_valid_config():
     """Whatever the wizard collects, the file it would write must load + validate."""
     try:
@@ -147,6 +199,7 @@ def test_setup_wizard_renders_valid_config():
         "threshold": 0.25, "lookback": 24, "poll": 15,
         "web_host": "0.0.0.0", "web_port": 8080, "web_user": "admin", "web_pass": "pw",
         "mqtt_host": "localhost", "mqtt_port": 1883, "mqtt_user": "", "mqtt_pass": "",
+        "slack_enabled": "false", "slack_channel": "", "slack_token": "", "slack_minutes": 60,
     }
     parsed = yaml.safe_load(setup_wizard._render(answers))
     w.validate_config(parsed)

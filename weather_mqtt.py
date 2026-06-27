@@ -23,6 +23,7 @@ Test:  python weather_mqtt.py --config config.yaml --once --dry-run --verbose
 import argparse
 import json
 import logging
+import os
 import signal
 import time
 from datetime import datetime, timedelta, timezone
@@ -216,6 +217,16 @@ def validate_config(cfg):
     mq.setdefault("retain", True)
     mq["retain"] = bool(mq["retain"])
     mq.setdefault("status_topic", "")   # optional: JSON snapshot of conditions
+
+    # --- Slack alerts (optional) ---
+    slack = cfg.setdefault("slack", {})
+    slack.setdefault("enabled", False)
+    slack["enabled"] = bool(slack["enabled"])
+    slack.setdefault("bot_token", "")      # or set SLACK_BOT_TOKEN in the env
+    slack.setdefault("channel", "")        # channel name (#alerts) or ID (C0…)
+    mins = _as_number(slack.get("broker_unreachable_minutes", 60), 60,
+                      "slack.broker_unreachable_minutes")
+    slack["broker_unreachable_minutes"] = max(1, int(mins))
 
     # Payloads must be strings. Unquoted ON/OFF/YES/NO in YAML parse as
     # booleans -- coerce and warn so a PLC never gets "True" by surprise.
@@ -613,6 +624,78 @@ def make_mqtt_client(mq):
 
 
 # ---------------------------------------------------------------------------
+# Slack alerting (broker-unreachable)
+# ---------------------------------------------------------------------------
+class BrokerWatch:
+    """Tracks how long the MQTT broker has been unreachable and decides when to
+    fire a Slack alert (once on threshold breach) and a recovery notice.
+
+    Pure/​deterministic (takes `now` as an argument) so it's unit-testable
+    without sleeping or a real clock. `update()` returns one of:
+      "down"      -> broker has been down past the threshold; alert now
+      "recovered" -> broker is back after we had alerted; send the all-clear
+      None        -> nothing to announce
+    """
+
+    def __init__(self, threshold_minutes=60):
+        self.threshold = timedelta(minutes=max(1, int(threshold_minutes)))
+        self.down_since = None
+        self.alerted = False
+
+    def update(self, connected, now):
+        if connected:
+            recovered = self.alerted
+            self.down_since = None
+            self.alerted = False
+            return "recovered" if recovered else None
+        if self.down_since is None:
+            self.down_since = now
+        if not self.alerted and (now - self.down_since) >= self.threshold:
+            self.alerted = True
+            return "down"
+        return None
+
+    def downtime_minutes(self, now):
+        if self.down_since is None:
+            return 0
+        return int((now - self.down_since).total_seconds() // 60)
+
+
+def slack_token(slack):
+    """Bot token from the env (preferred) or config. Env wins so the secret can
+    stay out of config.yaml."""
+    return os.environ.get("SLACK_BOT_TOKEN") or (slack.get("bot_token") or "")
+
+
+def notify_slack(slack, text):
+    """Post a message to Slack via chat.postMessage. Best-effort: never raises."""
+    if not slack or not slack.get("enabled"):
+        return False
+    token = slack_token(slack)
+    channel = slack.get("channel", "")
+    if not token or not channel:
+        LOG.warning("Slack alert wanted but bot token or channel is not set "
+                    "(set slack.channel and SLACK_BOT_TOKEN or slack.bot_token)")
+        return False
+    try:
+        r = requests.post(
+            "https://slack.com/api/chat.postMessage",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"channel": channel, "text": text},
+            timeout=10,
+        )
+        data = r.json()
+        if not data.get("ok"):
+            LOG.warning("Slack alert rejected: %s", data.get("error"))
+            return False
+        LOG.info("Slack alert sent to %s", channel)
+        return True
+    except Exception as e:
+        LOG.warning("Slack alert failed to send: %s", e)
+        return False
+
+
+# ---------------------------------------------------------------------------
 # State snapshot (consumed by the web UI)
 # ---------------------------------------------------------------------------
 def write_state(path, metrics, rule_rows, lookback, connected):
@@ -698,6 +781,7 @@ def main():
 
     last_state = {}            # rule name -> bool
     last_change = {}           # rule name -> iso timestamp of last published change
+    broker_watch = BrokerWatch(cfg["slack"]["broker_unreachable_minutes"])
 
     while not stop["flag"]:
         # Reload config each cycle so web-UI edits to rules / thresholds /
@@ -793,6 +877,26 @@ def main():
 
         except Exception as e:
             LOG.error("Poll cycle failed: %s", e)
+
+        # Broker-reachability watch runs every cycle, independent of the weather
+        # fetch above, so a Slack alert fires even during an NWS outage.
+        if client is not None:
+            slack_cfg = cfg.get("slack", {})
+            broker_watch.threshold = timedelta(
+                minutes=cfg["slack"]["broker_unreachable_minutes"])
+            now = datetime.now(timezone.utc)
+            trigger = broker_watch.update(client.is_connected(), now)
+            if trigger == "down":
+                mins = broker_watch.downtime_minutes(now)
+                notify_slack(slack_cfg,
+                             f":red_circle: *weather-mqtt*: MQTT broker "
+                             f"`{mq['host']}:{mq['port']}` has been unreachable for "
+                             f"~{mins} min. Irrigation directives are not being "
+                             f"published.")
+            elif trigger == "recovered":
+                notify_slack(slack_cfg,
+                             f":large_green_circle: *weather-mqtt*: MQTT broker "
+                             f"`{mq['host']}:{mq['port']}` is reachable again.")
 
         if args.once:
             break
