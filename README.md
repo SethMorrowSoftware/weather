@@ -194,22 +194,36 @@ backend) you can drop onto any ordinary web host — including shared cPanel
 hosting — to show off the UI without installing anything. Open `demo/index.html`
 or see `demo/README.md` for deployment steps.
 
-## Run as services
+## Run as services (manual)
+
+`sudo ./install.sh` already does all of this for you. To wire up systemd by hand
+instead, run these from the cloned repo (the unit files assume
+`/opt/weather-mqtt`):
 
 ```bash
 sudo useradd --system --no-create-home weather   # service account
 sudo chown -R weather:weather /opt/weather-mqtt   # allow writing cache/state
 
-# Monitor
-sudo cp weather-mqtt.service /etc/systemd/system/
-# Web UI (optional)
-sudo cp weather-webui.service /etc/systemd/system/
+# Install the unit files (from the repo checkout)
+sudo cp weather-mqtt.service /etc/systemd/system/    # monitor
+sudo cp weather-webui.service /etc/systemd/system/   # web UI (optional)
 
 sudo systemctl daemon-reload
 sudo systemctl enable --now weather-mqtt
 sudo systemctl enable --now weather-webui          # optional
 journalctl -u weather-mqtt -f                       # live logs
 ```
+
+## Updating
+
+```bash
+cd weather && git pull
+sudo ./install.sh        # idempotent: refreshes code + deps, keeps your config
+```
+
+If you installed by hand, re-copy the `.py` files to your install dir, run
+`./venv/bin/pip install -r requirements.txt`, then
+`sudo systemctl restart weather-mqtt weather-webui`.
 
 ## Customizing rules
 
@@ -243,6 +257,31 @@ Available metrics:
 `on_match` / `on_clear` payloads are sent literally, so they can be anything
 your PLCs expect — `INHIBIT`, `1`, `STOP`, or even a JSON string.
 
+## Project layout
+
+| Path | What it is |
+|---|---|
+| `weather_mqtt.py` | The monitor: polls NWS, evaluates rules, publishes MQTT, writes `weather_state.json`. |
+| `webui.py` | Flask dashboard + config editor (Dashboard / Settings / Rules), `/api/state`, `/healthz`. |
+| `setup_wizard.py` | Interactive first-run config generator (`weather-mqtt-setup`). |
+| `install.sh` | One-command Debian/Ubuntu installer (Mosquitto + venv + services). |
+| `config.yaml` | Example/active configuration (the installer writes a real one from the wizard). |
+| `test_weather_mqtt.py` | Offline test suite (no network needed). |
+| `weather-mqtt.service`, `weather-webui.service` | systemd unit templates. |
+| `pyproject.toml` | Packaging + the `weather-mqtt` / `weather-webui` / `weather-mqtt-setup` commands. |
+| `demo/` | Standalone static copy of the UI for cPanel/static hosting (see `demo/README.md`). |
+
+## Development & tests
+
+```bash
+python test_weather_mqtt.py          # 24 offline tests, no network required
+```
+
+CI (GitHub Actions, `.github/workflows/tests.yml`) runs the suite on Python
+3.9–3.12 on every push/PR, plus an **`install-smoke`** job that runs the real
+`install.sh` on a clean Ubuntu VM and verifies Mosquitto and both services come
+up, the dashboard responds, and the broker round-trips a message.
+
 ## Notes & tips
 
 - **Fail-safe behavior:** if a metric is unavailable a cycle (station gap,
@@ -257,11 +296,20 @@ your PLCs expect — `INHIBIT`, `1`, `STOP`, or even a JSON string.
   each cycle as a heartbeat if your broker may drop retained values.
 - **Polling frequency:** 15 minutes is plenty — NWS observations update roughly
   hourly. Be a good citizen of a free API.
+- **Validated config:** invalid configs (bad coordinates, unknown metric or
+  operator, duplicate rule names, empty rules) are rejected with a clear message
+  — the web UI won't save them, and on a hot reload the monitor keeps its
+  last-good config. A single broken rule is isolated so it can't take down the
+  rest of the cycle.
+- **Robust startup:** if NWS is unreachable at boot the monitor retries with
+  backoff instead of crash-looping; transient broker outages self-heal (a
+  directive that failed to publish is retried next cycle).
 
 ## Troubleshooting
 
 - **403 from weather.gov** → your `user_agent` is missing or rejected; set a real
-  contact string.
+  contact string. The monitor keeps retrying with backoff, so fix it in the UI
+  (or `config.yaml`) and it recovers on the next cycle without a restart.
 - **`precip_accum_in` is always null** → the station doesn't report hourly
   precipitation; pin a different `station_id`.
 - **Web UI shows "No status yet"** → start `weather_mqtt.py`; it writes
