@@ -186,76 +186,105 @@ BASE = """
 <link rel="icon" href="{{ favicon }}">
 <style>
  :root{
-   --bg:#0b1220;--panel:#111c30;--panel2:#0d1626;--line:#26344b;--line2:#1b2740;
-   --ink:#e6edf6;--muted:#9fb3cd;--muted2:#7d93b3;--accent:#3b82f6;--accent2:#2563eb;
-   --good:#22c55e;--bad:#f87171;--warn:#fbbf24;
+   --bg:#0a111f;--bg2:#0c1424;--panel:#111d33;--panel2:#0e1828;
+   --line:#243349;--line2:#1a2742;--ink:#e8eef8;--muted:#a3b6d2;--muted2:#7e94b5;
+   --accent:#4b8bf5;--accent2:#2f6fe0;--accentglow:rgba(75,139,245,.35);
+   --good:#34d399;--good2:#22c55e;--bad:#f87171;--bad2:#ef4444;--warn:#fbbf24;
+   --r:10px;--r-lg:16px;--r-pill:999px;--shadow:0 18px 40px -24px rgba(0,0,0,.85);
+   --ring:0 0 0 3px var(--accentglow);--t:.18s cubic-bezier(.4,0,.2,1);
  }
  *{box-sizing:border-box}
- body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;margin:0;
-   background:radial-gradient(1200px 600px at 80% -10%,#15233c 0,var(--bg) 55%);
-   color:var(--ink);min-height:100vh;-webkit-font-smoothing:antialiased}
- a{color:#8bbcff}
- header{position:sticky;top:0;z-index:10;background:rgba(13,22,38,.86);
-   backdrop-filter:blur(8px);border-bottom:1px solid var(--line2);
-   padding:12px 22px;display:flex;gap:22px;align-items:center}
- header h1{font-size:16px;margin:0;color:#fff;display:flex;gap:9px;align-items:center;font-weight:700}
- nav{display:flex;gap:6px;flex-wrap:wrap}
- nav a{color:var(--muted);text-decoration:none;font-size:14px;padding:6px 12px;border-radius:8px}
- nav a:hover{color:#fff;background:#16233b}
- nav a.active{color:#fff;background:#1d2c49;font-weight:600}
+ body{font-family:system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;margin:0;
+   color:var(--ink);min-height:100vh;line-height:1.5;-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;
+   background:radial-gradient(900px 500px at 88% -8%,#1a2c4b 0,transparent 60%),radial-gradient(700px 500px at 0% 0%,#13213a 0,transparent 55%),var(--bg);background-attachment:fixed}
+ a{color:#86b6ff;text-decoration:none}a:hover{text-decoration:underline}
+ ::selection{background:var(--accentglow)}
+ header{position:sticky;top:0;z-index:20;display:flex;gap:22px;align-items:center;padding:12px 22px;
+   background:rgba(9,15,28,.78);backdrop-filter:saturate(140%) blur(10px);-webkit-backdrop-filter:saturate(140%) blur(10px);border-bottom:1px solid var(--line2)}
+ header h1{font-size:15.5px;margin:0;color:#fff;display:flex;gap:10px;align-items:center;font-weight:700;letter-spacing:.2px}
+ header h1 .logo{display:inline-grid;place-items:center;width:28px;height:28px;border-radius:9px;background:linear-gradient(160deg,#3b82f6,#1e40af);box-shadow:0 4px 12px -4px var(--accentglow);font-size:15px}
+ nav{display:flex;gap:4px;flex-wrap:wrap}
+ nav a{color:var(--muted);font-size:14px;padding:7px 13px;border-radius:9px;font-weight:500;transition:color var(--t),background var(--t)}
+ nav a:hover{color:#fff;background:#17243c;text-decoration:none}
+ nav a.active{color:#fff;background:#1c2e4e;font-weight:600;box-shadow:inset 0 0 0 1px #2c4470,0 1px 0 rgba(255,255,255,.04)}
  .spacer{flex:1}
- .dot{width:9px;height:9px;border-radius:50%;display:inline-block;margin-right:7px;
-   box-shadow:0 0 0 3px rgba(255,255,255,.04)}
+ .conn{font-size:12.5px;color:var(--muted);display:flex;align-items:center;white-space:nowrap;font-weight:500}
+ .dot{width:9px;height:9px;border-radius:50%;display:inline-block;margin-right:8px;position:relative}
  .dot.up{background:var(--good)}.dot.down{background:var(--bad)}.dot.idle{background:var(--muted2)}
- .conn{font-size:12.5px;color:var(--muted);display:flex;align-items:center}
- main{max-width:960px;margin:26px auto;padding:0 18px 60px}
- .card{background:linear-gradient(180deg,var(--panel),var(--panel2));
-   border:1px solid var(--line2);border-radius:14px;padding:20px 22px;margin-bottom:18px;
-   box-shadow:0 1px 0 rgba(255,255,255,.03) inset,0 10px 30px -20px rgba(0,0,0,.8)}
+ .dot.up::after{content:"";position:absolute;inset:-4px;border-radius:50%;border:2px solid var(--good);opacity:.5;animation:ping 1.8s cubic-bezier(0,0,.2,1) infinite}
+ @keyframes ping{0%{transform:scale(.6);opacity:.7}80%,100%{transform:scale(1.7);opacity:0}}
+ main{max-width:980px;margin:26px auto;padding:0 18px 72px;animation:rise .35s ease both}
+ @keyframes rise{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+ .card{position:relative;background:linear-gradient(180deg,var(--panel),var(--panel2));border:1px solid var(--line2);border-radius:var(--r-lg);padding:20px 22px;margin-bottom:18px;box-shadow:var(--shadow)}
+ .card::before{content:"";position:absolute;inset:0 0 auto 0;height:1px;border-radius:var(--r-lg) var(--r-lg) 0 0;background:linear-gradient(90deg,transparent,rgba(255,255,255,.08),transparent)}
  .card h3{margin:0 0 4px;font-size:15px;letter-spacing:.2px}
- .eyebrow{text-transform:uppercase;letter-spacing:.12em;font-size:11px;color:var(--muted2);font-weight:700}
- .big{font-size:34px;font-weight:800;margin:8px 0;letter-spacing:-.5px}
+ .eyebrow{text-transform:uppercase;letter-spacing:.13em;font-size:11px;color:var(--muted2);font-weight:700}
+ .toprow{display:flex;justify-content:space-between;align-items:baseline;gap:12px;flex-wrap:wrap}
+ hr{border:0;border-top:1px solid var(--line2);margin:18px 0}
+ #directive-card{overflow:hidden}
+ #directive-card::after{content:"";position:absolute;left:0;top:0;bottom:0;width:4px;background:var(--muted2);transition:background var(--t)}
+ #directive-card.state-inhibit::after{background:linear-gradient(var(--bad),var(--bad2))}
+ #directive-card.state-allow::after{background:linear-gradient(var(--good),var(--good2))}
+ #directive-card.state-unknown::after{background:var(--warn)}
+ #directive-card.state-inhibit{background:linear-gradient(180deg,rgba(248,113,113,.07),var(--panel2))}
+ #directive-card.state-allow{background:linear-gradient(180deg,rgba(52,211,153,.06),var(--panel2))}
+ .big{font-size:34px;font-weight:800;margin:8px 0;letter-spacing:-.6px;line-height:1.1}
  .inhibit{color:var(--bad)}.allow{color:var(--good)}.unknown{color:var(--warn)}
- table{width:100%;border-collapse:collapse;font-size:14px}
- th,td{text-align:left;padding:10px 10px;border-bottom:1px solid var(--line)}
- tr:last-child td{border-bottom:0}
- th{color:var(--muted);font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:.06em}
- code{background:#0a1322;border:1px solid var(--line);border-radius:5px;padding:1px 6px;font-size:12.5px}
- .pill{padding:3px 10px;border-radius:999px;font-size:12px;font-weight:700;white-space:nowrap}
- .on{background:#3a1115;color:#fecaca;box-shadow:0 0 0 1px #7f1d1d inset}
- .off{background:#0f2e1c;color:#bbf7d0;box-shadow:0 0 0 1px #14532d inset}
+ .table-wrap{overflow-x:auto;border-radius:var(--r);margin:0 -4px}
+ table{width:100%;border-collapse:collapse;font-size:14px;min-width:520px}
+ th,td{text-align:left;padding:11px 12px;border-bottom:1px solid var(--line)}
+ tbody tr{transition:background var(--t)}tbody tr:hover{background:rgba(255,255,255,.022)}
+ tbody tr:last-child td{border-bottom:0}
+ th{color:var(--muted);font-weight:600;font-size:11.5px;text-transform:uppercase;letter-spacing:.07em}
+ td:nth-child(4){font-variant-numeric:tabular-nums}
+ code{background:#0a1322;border:1px solid var(--line);border-radius:6px;padding:1.5px 6px;font-size:12.5px;font-family:ui-monospace,Menlo,Consolas,monospace}
+ .pill{display:inline-flex;align-items:center;gap:6px;padding:3.5px 11px;border-radius:var(--r-pill);font-size:12px;font-weight:700;white-space:nowrap}
+ .pill::before{content:"";width:6px;height:6px;border-radius:50%;background:currentColor;opacity:.9}
+ .on{background:#3a1115;color:#fda4af;box-shadow:0 0 0 1px #7f1d1d inset}
+ .off{background:#0f2e1c;color:#86efac;box-shadow:0 0 0 1px #14532d inset}
  .na{background:#1c2740;color:#cdd9ec;box-shadow:0 0 0 1px #2c3c5a inset}
- label{display:block;font-size:13px;color:var(--muted);margin:14px 0 5px;font-weight:600}
+ label{display:block;font-size:13px;color:var(--muted);margin:14px 0 6px;font-weight:600}
  .hint{font-weight:400;color:var(--muted2)}
- input,textarea,select{width:100%;background:#0a1322;color:var(--ink);
-   border:1px solid var(--line);border-radius:8px;padding:9px 11px;font-size:14px;font-family:inherit}
- input:focus,textarea:focus,select:focus{outline:none;border-color:var(--accent);
-   box-shadow:0 0 0 3px rgba(59,130,246,.18)}
- textarea{min-height:340px;font-family:ui-monospace,Menlo,Consolas,monospace;line-height:1.5}
- .row{display:flex;gap:16px;flex-wrap:wrap}.row>div{flex:1;min-width:160px}
- button{background:var(--accent2);color:#fff;border:0;border-radius:9px;padding:11px 20px;
-   font-size:14px;font-weight:700;cursor:pointer;margin-top:18px}
- button:hover{background:var(--accent)}
- button.secondary{background:#1d2c49}
- button.secondary:hover{background:#26395e}
- button.danger{background:#3a1115;color:#fecaca;box-shadow:0 0 0 1px #7f1d1d inset}
- button.danger:hover{background:#511a20}
- button.mini{padding:8px 12px;margin-top:0}
- .btnrow{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
- .field-err{color:#fda4a4;font-size:12px;margin-top:5px;min-height:14px}
+ input,textarea,select{width:100%;background:#0a1322;color:var(--ink);border:1px solid var(--line);border-radius:var(--r);padding:10px 12px;font-size:14px;font-family:inherit;transition:border-color var(--t),box-shadow var(--t),background var(--t)}
+ input::placeholder,textarea::placeholder{color:#5a6f90}
+ input:hover,textarea:hover,select:hover{border-color:#33486a}
+ input:focus,textarea:focus,select:focus{outline:none;border-color:var(--accent);box-shadow:var(--ring)}
+ select{appearance:none;-webkit-appearance:none;cursor:pointer;background-image:linear-gradient(45deg,transparent 50%,var(--muted) 50%),linear-gradient(135deg,var(--muted) 50%,transparent 50%);background-position:calc(100% - 18px) 17px,calc(100% - 13px) 17px;background-size:5px 5px,5px 5px;background-repeat:no-repeat;padding-right:34px}
  input.invalid{border-color:var(--bad);box-shadow:0 0 0 3px rgba(248,113,113,.16)}
- .msg{padding:11px 15px;border-radius:9px;margin-bottom:16px;font-size:14px;font-weight:600}
+ .field-err{color:#fda4af;font-size:12px;margin-top:5px;min-height:14px}
+ textarea{min-height:340px;font-family:ui-monospace,Menlo,Consolas,monospace;line-height:1.55}
+ .row{display:flex;gap:16px;flex-wrap:wrap}.row>div{flex:1;min-width:165px}
+ button{background:linear-gradient(180deg,var(--accent),var(--accent2));color:#fff;border:0;border-radius:var(--r);padding:11px 20px;font-size:14px;font-weight:700;cursor:pointer;margin-top:18px;box-shadow:0 8px 18px -10px var(--accentglow);transition:filter var(--t),transform var(--t),box-shadow var(--t)}
+ button:hover{filter:brightness(1.08)}button:active{transform:translateY(1px)}button:focus-visible{outline:none;box-shadow:var(--ring)}
+ button.secondary{background:#1c2e4e;box-shadow:none;color:#dbe6f7}button.secondary:hover{background:#26395e;filter:none}
+ button.danger{background:#3a1115;color:#fecaca;box-shadow:0 0 0 1px #7f1d1d inset}button.danger:hover{background:#511a20;filter:none}
+ button.mini{padding:8px 13px;margin-top:0;font-size:13px}
+ .btnrow{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+ .msg{padding:12px 15px;border-radius:var(--r);margin-bottom:16px;font-size:14px;font-weight:600;display:flex;align-items:center;gap:9px}
  .ok{background:#0f2e1c;color:#bbf7d0;box-shadow:0 0 0 1px #14532d inset}
  .err{background:#3a1115;color:#fecaca;box-shadow:0 0 0 1px #7f1d1d inset}
  .muted{color:var(--muted2);font-size:12.5px}
- .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(148px,1fr));gap:12px}
- .metric{background:#0a1322;border:1px solid var(--line);border-radius:11px;padding:13px 14px}
- .metric .v{font-size:22px;font-weight:700}.metric .k{color:var(--muted);font-size:12px;margin-top:3px}
- .toprow{display:flex;justify-content:space-between;align-items:baseline;gap:12px;flex-wrap:wrap}
- hr{border:0;border-top:1px solid var(--line2);margin:18px 0}
+ .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px}
+ .metric{background:#0a1322;border:1px solid var(--line);border-radius:12px;padding:14px 15px;transition:transform var(--t),border-color var(--t)}
+ .metric:hover{transform:translateY(-2px);border-color:#314865}
+ .metric .v{font-size:23px;font-weight:700;letter-spacing:-.3px;font-variant-numeric:tabular-nums}
+ .metric .k{color:var(--muted);font-size:12px;margin-top:4px}
+ #dash.loading .metric .v,#dash.loading #directive{color:transparent;border-radius:8px;background:linear-gradient(90deg,#0e1a2d 25%,#192842 37%,#0e1a2d 63%);background-size:400% 100%;animation:shimmer 1.4s ease infinite}
+ @keyframes shimmer{0%{background-position:100% 0}100%{background-position:-100% 0}}
+ .tabs{display:inline-flex;gap:4px;margin:6px 0 16px;padding:4px;background:#0a1322;border:1px solid var(--line);border-radius:12px}
+ .tab{margin:0;background:transparent;color:var(--muted);border:0;border-radius:9px;padding:8px 16px;font-weight:600;font-size:14px;cursor:pointer;box-shadow:none}
+ .tab:hover{color:#fff;filter:none}
+ .tab.active{background:#1c2e4e;color:#fff;box-shadow:inset 0 0 0 1px #2c4470}
+ .rule-card{background:#0b1525;border:1px solid var(--line);border-radius:13px;padding:16px 18px;margin-bottom:14px}
+ .rule-card .rhead{display:flex;justify-content:space-between;align-items:center;gap:10px}
+ .rule-card .rhead .idx{font-size:11px;color:var(--muted2);font-weight:700;text-transform:uppercase;letter-spacing:.09em}
+ .cond{align-items:flex-end}.cond .rm{flex:0 0 auto;min-width:0}.combine-wrap{margin-top:6px}
+ footer{max-width:980px;margin:0 auto;padding:8px 18px 44px;color:var(--muted2);font-size:12.5px;text-align:center}
+ @media (max-width:560px){header{gap:12px;padding:10px 14px}.conn{display:none}main{margin-top:16px}.big{font-size:28px}}
+ @media (prefers-reduced-motion:reduce){*{animation-duration:.001ms!important;animation-iteration-count:1!important;transition-duration:.001ms!important;scroll-behavior:auto!important}}
 </style></head><body>
 <header>
- <h1>🌧 Precipitation → MQTT</h1>
+ <h1><span class="logo">🌧</span> Precipitation → MQTT</h1>
  <nav>
   <a href="{{ url_for('dashboard') }}" class="{{ 'active' if page=='dash' }}">Dashboard</a>
   <a href="{{ url_for('settings') }}" class="{{ 'active' if page=='settings' }}">Settings</a>
@@ -267,7 +296,9 @@ BASE = """
 <main>
  {% if msg %}<div class="msg {{ msgclass }}">{{ msg }}</div>{% endif %}
  {{ body|safe }}
-</main></body></html>
+</main>
+<footer>Precipitation → MQTT controller · data source: National Weather Service (api.weather.gov)</footer>
+</body></html>
 """
 
 
@@ -280,7 +311,7 @@ def page(body, **kw):
 # Dashboard
 # ---------------------------------------------------------------------------
 DASH = """
-<div id="dash" data-state-file="{{ state_file }}">
+<div id="dash" class="loading" data-state-file="{{ state_file }}">
   <div class="card" id="directive-card">
     <div class="eyebrow">Irrigation directive</div>
     <div class="big unknown" id="directive">…</div>
@@ -305,12 +336,14 @@ DASH = """
 
   <div class="card">
     <div class="eyebrow" style="margin-bottom:10px">Rules</div>
-    <table>
-      <thead><tr><th>Rule</th><th>Topic</th><th>State</th><th>Payload</th><th>Last change</th></tr></thead>
-      <tbody id="rulebody">
-        <tr><td colspan="5" class="muted">Loading…</td></tr>
-      </tbody>
-    </table>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Rule</th><th>Topic</th><th>State</th><th>Payload</th><th>Last change</th></tr></thead>
+        <tbody id="rulebody">
+          <tr><td colspan="5" class="muted">Loading…</td></tr>
+        </tbody>
+      </table>
+    </div>
   </div>
   <p class="muted">Live — updates every {{ refresh }}s. <span id="staleness"></span></p>
 </div>
@@ -319,16 +352,26 @@ DASH = """
 const REFRESH = {{ refresh }} * 1000;
 const fmt = v => v === null || v === undefined ? "—" : (v === true ? "yes" : (v === false ? "no" : v));
 function setText(id, t){ const e=document.getElementById(id); if(e) e.textContent=t; }
+function agoText(iso){
+  if(!iso) return "—";
+  const t=Date.parse(iso); if(isNaN(t)) return iso;
+  const s=Math.max(0,Math.round((Date.now()-t)/1000));
+  if(s<5) return "just now"; if(s<60) return s+"s ago";
+  if(s<3600) return Math.round(s/60)+"m ago"; return Math.round(s/3600)+"h ago";
+}
 
 function render(s){
   const conn = document.getElementById("connstate");
+  const card = document.getElementById("directive-card");
   if(!s){
     document.getElementById("directive").className = "big unknown";
+    if(card) card.className = "card state-unknown";
     setText("directive","NO DATA");
     setText("directive-sub","No snapshot yet. Start the monitor (weather_mqtt.py); it writes one each poll cycle.");
     conn.innerHTML = '<span class="dot idle"></span>no monitor data';
     const tb = document.getElementById("rulebody");
     if(tb) tb.innerHTML = '<tr><td colspan="5" class="muted">Waiting on the monitor…</td></tr>';
+    document.getElementById("dash").classList.remove("loading");
     return;
   }
   // connection badge
@@ -339,18 +382,22 @@ function render(s){
   const rules = s.rules || [];
   const irr = rules.find(r => /irrigation|rain_inhibit/.test(r.name));
   const d = document.getElementById("directive");
+  let st = "unknown";
   if(irr && irr.active !== null && irr.active !== undefined){
-    d.className = "big " + (irr.active ? "inhibit" : "allow");
+    st = irr.active ? "inhibit" : "allow";
+    d.className = "big " + st;
     setText("directive", (irr.current_payload ?? "?") + (irr.active ? " — do NOT water" : " — watering allowed"));
-    setText("directive-sub", "topic " + irr.topic + (irr.last_change ? " · changed " + irr.last_change : ""));
+    setText("directive-sub", "topic " + irr.topic + (irr.last_change ? " · changed " + agoText(irr.last_change) : ""));
   } else {
     d.className = "big unknown";
     setText("directive","UNKNOWN");
     setText("directive-sub","No irrigation rule data yet (waiting on weather data).");
   }
+  if(card) card.className = "card state-" + st;
 
   const m = s.metrics || {};
-  setText("updated", "updated " + (s.updated || "—"));
+  const up2=document.getElementById("updated");
+  if(up2){ up2.textContent = "updated " + agoText(s.updated); up2.title = s.updated || ""; }
   setText("m_rain", fmt(m.is_raining));
   setText("m_accum", fmt(m.precip_accum_in) + " in");
   setText("m_accum_k", "rain last " + (s.lookback_hours ?? "?") + "h");
@@ -372,10 +419,11 @@ function render(s){
     tr.innerHTML = '<td>'+esc(r.name)+'<div class="muted">'+esc(r.description||"")+'</div></td>'+
       '<td><code>'+esc(r.topic)+'</code></td><td>'+pill+'</td>'+
       '<td>'+(r.current_payload!=null?esc(r.current_payload):"—")+'</td>'+
-      '<td class="muted">'+esc(r.last_change||"—")+'</td>';
+      '<td class="muted">'+esc(agoText(r.last_change))+'</td>';
     tb.appendChild(tr);
   }
   if(!rules.length) tb.innerHTML = '<tr><td colspan="5" class="muted">No rules.</td></tr>';
+  document.getElementById("dash").classList.remove("loading");
 }
 function esc(s){ const d=document.createElement("div"); d.textContent=String(s); return d.innerHTML; }
 
@@ -828,22 +876,6 @@ def _structured_list(cfg):
 
 
 RULES = """
-<style>
- .tabs{display:flex;gap:6px;margin:6px 0 16px}
- .tab{margin:0;background:#0a1322;color:var(--muted);border:1px solid var(--line);
-   border-radius:9px;padding:8px 16px;font-weight:600;font-size:14px;cursor:pointer}
- .tab.active{background:#1d2c49;color:#fff;border-color:var(--accent)}
- .rule-card{background:#0a1322;border:1px solid var(--line);border-radius:12px;
-   padding:16px 18px;margin-bottom:14px}
- .rule-card .rhead{display:flex;justify-content:space-between;align-items:center;gap:10px}
- .rule-card .rhead .idx{font-size:12px;color:var(--muted2);font-weight:700;text-transform:uppercase;letter-spacing:.08em}
- .cond{align-items:flex-end}
- .cond .rm{flex:0 0 auto;min-width:0}
- button.danger{background:#3a1115;color:#fecaca;box-shadow:0 0 0 1px #7f1d1d inset}
- button.danger:hover{background:#511a20}
- button.mini{padding:8px 12px;margin-top:0}
- .combine-wrap{margin-top:6px}
-</style>
 <form method="post" id="rules-form">
   <input type="hidden" name="mode" id="mode" value="form">
   <input type="hidden" name="rules_json" id="rules_json">
