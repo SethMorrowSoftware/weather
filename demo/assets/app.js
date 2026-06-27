@@ -19,6 +19,15 @@ function esc(s) { const d = document.createElement("div"); d.textContent = Strin
 const fmt = v => (v === null || v === undefined) ? "—"
   : (v === true ? "yes" : (v === false ? "no" : v));
 function isoNow() { return new Date().toISOString().replace(/\.\d+Z$/, "Z"); }
+function agoText(iso) {
+  if (!iso) return "—";
+  const t = Date.parse(iso); if (isNaN(t)) return iso;
+  const s = Math.max(0, Math.round((Date.now() - t) / 1000));
+  if (s < 5) return "just now";
+  if (s < 60) return s + "s ago";
+  if (s < 3600) return Math.round(s / 60) + "m ago";
+  return Math.round(s / 3600) + "h ago";
+}
 
 /* =========================================================================
    DASHBOARD
@@ -98,16 +107,22 @@ function isoNow() { return new Date().toISOString().replace(/\.\d+Z$/, "Z"); }
 
     const irr = s.rules.find(r => /irrigation|rain_inhibit/.test(r.name));
     const d = document.getElementById("directive");
+    const card = document.getElementById("directive-card");
+    let st = "unknown";
     if (irr && irr.active !== null && irr.active !== undefined) {
-      d.className = "big " + (irr.active ? "inhibit" : "allow");
+      st = irr.active ? "inhibit" : "allow";
+      d.className = "big " + st;
       setText("directive", irr.current_payload + (irr.active ? " — do NOT water" : " — watering allowed"));
-      setText("directive-sub", "topic " + irr.topic + (irr.last_change ? " · changed " + irr.last_change : ""));
+      setText("directive-sub", "topic " + irr.topic + (irr.last_change ? " · changed " + agoText(irr.last_change) : ""));
     } else {
       d.className = "big unknown"; setText("directive", "UNKNOWN");
+      setText("directive-sub", "Waiting on weather data.");
     }
+    if (card) card.className = "card state-" + st;
 
     const m = s.metrics;
-    setText("updated", "updated " + s.updated);
+    const up2 = document.getElementById("updated");
+    if (up2) { up2.textContent = "updated " + agoText(s.updated); up2.title = s.updated; }
     setText("m_rain", fmt(m.is_raining));
     setText("m_accum", fmt(m.precip_accum_in) + " in");
     setText("m_accum_k", "rain last " + s.lookback_hours + "h");
@@ -125,9 +140,11 @@ function isoNow() { return new Date().toISOString().replace(/\.\d+Z$/, "Z"); }
       const tr = document.createElement("tr");
       tr.innerHTML = "<td>" + esc(r.name) + '<div class="muted">' + esc(r.description) + "</div></td>" +
         "<td><code>" + esc(r.topic) + "</code></td><td>" + pill + "</td>" +
-        "<td>" + esc(r.current_payload) + '</td><td class="muted">' + esc(r.last_change || "—") + "</td>";
+        "<td>" + esc(r.current_payload) + '</td><td class="muted">' + esc(agoText(r.last_change)) + "</td>";
       tb.appendChild(tr);
     }
+    const dash = document.getElementById("dash");
+    if (dash) dash.classList.remove("loading");
   }
 
   function tick() { render(buildState()); }
