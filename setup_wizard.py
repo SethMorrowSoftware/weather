@@ -126,6 +126,15 @@ mqtt:
   # Optional JSON snapshot of all conditions each cycle (handy for dashboards).
   status_topic: "irrigation/weather/status"
 
+# --- Slack alerts (optional) -----------------------------------------------
+# Get a Slack message if the broker is unreachable for too long. The bot token
+# can live here OR (preferred) in the SLACK_BOT_TOKEN environment variable.
+slack:
+  enabled: {c['slack_enabled']}
+  channel: "{c['slack_channel']}"
+  bot_token: "{c['slack_token']}"
+  broker_unreachable_minutes: {c['slack_minutes']}
+
 # --- Rules -----------------------------------------------------------------
 # The first rule is the irrigation inhibit. Tune thresholds here or in the
 # web UI's rule builder. Payloads are sent literally -- quote them.
@@ -213,6 +222,19 @@ def run_wizard():
                               validate=_range(1, 65535, "Port"))
         c["mqtt_user"] = _ask("    Username (blank = anonymous)", default="")
         c["mqtt_pass"] = _ask("    Password", default="") if c["mqtt_user"] else ""
+
+    # Slack alerts (optional).
+    print("\nSlack alerts (optional): get pinged if the broker goes unreachable.")
+    c["slack_enabled"] = "false"
+    c["slack_channel"] = c["slack_token"] = ""
+    c["slack_minutes"] = 60
+    if _yes_no("  Enable Slack alerts?", default=False):
+        c["slack_enabled"] = "true"
+        c["slack_channel"] = _ask("    Channel (#name or ID)", default="#alerts", required=True)
+        print("    Bot token (xoxb-...). Leave blank to use the SLACK_BOT_TOKEN env var instead.")
+        c["slack_token"] = _ask("    Bot token", default="")
+        c["slack_minutes"] = _ask("    Alert after broker down for (minutes)",
+                                  default="60", cast=int, validate=_range(1, 10080, "Minutes"))
     return c
 
 

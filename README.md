@@ -109,6 +109,7 @@ directly (or use the web UI below):
 - **`precipitation.lookback_hours`** — the rolling window for measured rainfall.
 - **`mqtt`** — point `host`/`port` at your broker; set `username`/`password` if
   needed; optional `status_topic` publishes a JSON snapshot each cycle.
+- **`slack`** — optional broker-down alerts (see [Slack alerts](#slack-alerts)).
 - **`rules`** — the first rule is the irrigation inhibit; tune its threshold.
 
 ## Test before deploying
@@ -186,6 +187,39 @@ password); credentials are compared in constant time, and the UI fails **closed*
 — if `config.yaml` can't be read it denies access rather than serving the editor
 unauthenticated. Saved passwords are never echoed back into the page; leave a
 password field blank to keep the stored value.
+
+## Slack alerts
+
+If the MQTT broker becomes unreachable and **stays** down past a threshold
+(default 60 minutes), the monitor posts to Slack — and posts an all-clear when
+the broker comes back. This catches the case where the controller is healthy but
+can't deliver its directives to the PLCs.
+
+You need a Slack **bot token** (`xoxb-…`) with the `chat:write` scope, and the
+bot must be invited to the target channel.
+
+```yaml
+slack:
+  enabled: true
+  channel: "#irrigation-alerts"     # channel name or ID (e.g. C0123456)
+  bot_token: ""                     # or, preferred, the SLACK_BOT_TOKEN env var
+  broker_unreachable_minutes: 60
+```
+
+**Keep the token out of `config.yaml`** by putting it in the environment instead
+(it takes precedence over the config value). For the systemd service:
+
+```bash
+sudo systemctl edit weather-mqtt
+# add, under [Service]:
+#   Environment="SLACK_BOT_TOKEN=xoxb-your-token"
+sudo systemctl restart weather-mqtt
+```
+
+You can also enable/configure all of this from the web UI's **Settings → Slack
+alerts** card (the token is never echoed back; leave it blank to keep the stored
+one). Detection granularity is one poll cycle, so with the default 15-minute
+poll an alert fires within ~15 minutes of crossing the threshold.
 
 ### Static UI demo
 

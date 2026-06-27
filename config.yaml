@@ -58,6 +58,17 @@ mqtt:
   # (handy for dashboards / SCADA debugging). Leave "" to disable.
   status_topic: "irrigation/weather/status"
 
+# --- Slack alerts (optional) -----------------------------------------------
+# Post to Slack if the MQTT broker stays unreachable past the threshold (and an
+# all-clear when it recovers). Needs a bot token (xoxb-...) with chat:write,
+# invited to the channel. The token can go here OR -- preferred, to keep secrets
+# out of this file -- in the SLACK_BOT_TOKEN environment variable (which wins).
+slack:
+  enabled: false
+  channel: ""                       # "#alerts" or a channel ID like "C0123456"
+  bot_token: ""                     # or set SLACK_BOT_TOKEN in the environment
+  broker_unreachable_minutes: 60    # alert after the broker is down this long
+
 # --- Rules -----------------------------------------------------------------
 # Each rule publishes `on_match` to `topic` when its condition becomes true,
 # and `on_clear` when it becomes false again. Publishing happens only on a
