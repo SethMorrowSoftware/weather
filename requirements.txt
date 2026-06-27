@@ -1,3 +1,7 @@
 requests>=2.31
 paho-mqtt>=2.0
 PyYAML>=6.0
+
+# Web interface (webui.py). Not needed if you only run the monitor.
+Flask>=3.0
+ruamel.yaml>=0.17   # preserves comments when the web UI saves config.yaml

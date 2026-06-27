@@ -1,5 +1,5 @@
 [Unit]
-Description=Precipitation-driven MQTT controller (NWS / weather.gov)
+Description=Web UI for the precipitation MQTT controller
 After=network-online.target
 Wants=network-online.target
 
@@ -7,7 +7,7 @@ Wants=network-online.target
 Type=simple
 User=weather
 WorkingDirectory=/opt/weather-mqtt
-ExecStart=/opt/weather-mqtt/venv/bin/python /opt/weather-mqtt/weather_mqtt.py --config /opt/weather-mqtt/config.yaml
+ExecStart=/opt/weather-mqtt/venv/bin/python /opt/weather-mqtt/webui.py --config /opt/weather-mqtt/config.yaml
 Restart=on-failure
 RestartSec=10
 
