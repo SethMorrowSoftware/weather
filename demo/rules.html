@@ -23,11 +23,26 @@
 
 <main>
 <form id="rules-form">
+  <input type="hidden" id="mode" value="form">
   <div class="card">
     <h3>Rules</h3>
-    <p class="muted">YAML for the <code>rules:</code> list. The first rule controls irrigation. A rule's
-      <code>when</code> can be a single condition or an <code>any</code> (OR) / <code>all</code> (AND) group.
-      The whole list is validated before saving; on error nothing is written and your text is kept.</p>
+    <p class="muted">The first rule controls irrigation. Each rule publishes its <code>on_match</code> payload
+      to its topic when its condition becomes true, and <code>on_clear</code> when it clears. Build rules with
+      the form, or edit the raw YAML directly — both are validated before saving.</p>
+
+    <div class="tabs">
+      <button type="button" class="tab" data-tab="form">Form builder</button>
+      <button type="button" class="tab" data-tab="yaml">YAML (advanced)</button>
+    </div>
+
+    <div id="tab-form" class="tabpane">
+      <div id="builder"></div>
+      <div class="btnrow"><button type="button" class="secondary mini" id="add-rule">+ Add rule</button></div>
+      <div class="field-err" id="form-err"></div>
+      <button type="submit" id="save-form">Save rules</button>
+    </div>
+
+    <div id="tab-yaml" class="tabpane" style="display:none">
     <label>rules:</label>
     <textarea name="rules_yaml" id="rules_yaml" spellcheck="false">- name: irrigation_rain_inhibit
   description: "Hold irrigation when raining or >= 0.25 in / 24h"
@@ -63,12 +78,13 @@
   on_clear: "0"</textarea>
     <div class="field-err" id="rules-err"></div>
     <div class="btnrow">
-      <button type="submit">Save rules</button>
+      <button type="submit" id="save-yaml">Save rules</button>
       <button type="button" class="secondary" id="add-example">Append example rule</button>
       <button type="button" class="secondary" id="check">Validate</button>
     </div>
+    </div>
 
-    <details style="margin-top:18px" open>
+    <details style="margin-top:18px">
       <summary class="muted" style="cursor:pointer">Available metrics &amp; operators</summary>
       <table style="margin-top:10px">
         <thead><tr><th>Metric</th><th>Meaning</th><th>Operators</th></tr></thead>
@@ -90,6 +106,21 @@
 
 <footer>Precipitation → MQTT controller · demo build</footer>
 <div id="toast"></div>
+<script>
+/* Starting rules for the demo builder (mirrors the textarea above). */
+window.DEMO_RULES = [
+  {name:"irrigation_rain_inhibit", description:"Hold irrigation when raining or >= 0.25 in / 24h",
+   topic:"irrigation/rain_inhibit", on_match:"INHIBIT", on_clear:"ALLOW", combine:"any",
+   conditions:[{metric:"is_raining",operator:"==",value:"true"},
+               {metric:"precip_accum_in",operator:">=",value:"0.25"}]},
+  {name:"freeze_protection", description:"Energize heat trace below freezing",
+   topic:"facility/weather/freeze_protection", on_match:"ON", on_clear:"OFF", combine:"any",
+   conditions:[{metric:"temperature",operator:"<=",value:"35"}]},
+  {name:"any_nws_alert", description:"Flag whenever any NWS alert is active",
+   topic:"facility/weather/nws_alert", on_match:"1", on_clear:"0", combine:"any",
+   conditions:[{metric:"active_alert",operator:"any",value:""}]},
+];
+</script>
 <script src="assets/app.js"></script>
 </body>
 </html>

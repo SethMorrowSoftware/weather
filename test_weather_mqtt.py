@@ -266,6 +266,65 @@ def test_webui_settings_roundtrip_and_validation():
                 pass
 
 
+def test_webui_structured_rule_builder():
+    """The form builder's JSON -> rules conversion produces output the monitor
+    accepts, with correctly typed values; bad input is rejected."""
+    try:
+        import webui
+    except Exception as e:
+        print(f"  SKIP  test_webui_structured_rule_builder ({e})")
+        return
+    import yaml, copy
+
+    items = [
+        {"name": "irr", "description": "hold", "topic": "irrigation/x",
+         "on_match": "INHIBIT", "on_clear": "ALLOW", "combine": "any",
+         "conditions": [
+             {"metric": "is_raining", "operator": "==", "value": "true"},
+             {"metric": "precip_accum_in", "operator": ">=", "value": "0.25"}]},
+        {"name": "freeze", "topic": "f/z", "on_match": "ON", "combine": "any",
+         "conditions": [{"metric": "temperature", "operator": "<=", "value": "35"}]},
+        {"name": "alert", "topic": "f/a", "on_match": "1", "combine": "any",
+         "conditions": [{"metric": "active_alert", "operator": "any", "value": ""}]},
+    ]
+    built = webui._rules_from_structured(items)
+    parsed = yaml.safe_load(webui.dump_raw({"rules": built}))["rules"]
+
+    # value typing survived the YAML round-trip
+    assert parsed[0]["when"]["any"][0]["value"] is True            # bool
+    assert parsed[0]["when"]["any"][1]["value"] == 0.25            # float
+    assert parsed[1]["when"]["value"] == 35                        # int, single condition flattened
+    assert "value" not in parsed[2]["when"]                        # active_alert/any -> no value
+    # the monitor accepts what the builder produced
+    w.validate_config(copy.deepcopy({
+        "location": {"latitude": 1, "longitude": 2}, "user_agent": "x (a@b)",
+        "mqtt": {}, "rules": parsed}))
+
+    # round-trips back to the editable shape
+    struct = webui._rule_to_structured(parsed[0])
+    assert struct["combine"] == "any" and len(struct["conditions"]) == 2
+    assert struct["conditions"][0] == {"metric": "is_raining", "operator": "==", "value": "true"}
+
+    # rejections
+    for bad, needle in [
+        ([{"name": "", "topic": "t", "on_match": "x", "combine": "any",
+           "conditions": [{"metric": "temperature", "operator": "<", "value": "1"}]}], "name is required"),
+        ([{"name": "r", "topic": "t", "on_match": "x", "combine": "any",
+           "conditions": [{"metric": "bogus", "operator": "<", "value": "1"}]}], "unknown metric"),
+        ([{"name": "r", "topic": "t", "on_match": "x", "combine": "any",
+           "conditions": [{"metric": "temperature", "operator": "contains", "value": "1"}]}], "not valid"),
+        ([{"name": "r", "topic": "t", "on_match": "x", "combine": "any",
+           "conditions": [{"metric": "temperature", "operator": "<", "value": "abc"}]}], "numeric"),
+        ([{"name": "r", "topic": "t", "on_match": "x", "combine": "any", "conditions": []}], "at least one condition"),
+        ([], "at least one rule"),
+    ]:
+        try:
+            webui._rules_from_structured(bad)
+            raise AssertionError(f"expected rejection containing {needle!r}")
+        except ValueError as e:
+            assert needle in str(e), f"got {e!r}, wanted {needle!r}"
+
+
 def run():
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     failed = 0

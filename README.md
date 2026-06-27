@@ -1,5 +1,7 @@
 # Precipitation → MQTT Controller
 
+[![tests](https://github.com/SethMorrowSoftware/weather/actions/workflows/tests.yml/badge.svg)](https://github.com/SethMorrowSoftware/weather/actions/workflows/tests.yml)
+
 Watches rainfall from the **National Weather Service** (`api.weather.gov`) and
 publishes **MQTT** messages so irrigation PLCs know when **not** to water.
 
@@ -110,9 +112,14 @@ Run the offline logic tests (no network needed):
   interface itself** (bind host/port and the login username/password). Invalid
   values (e.g. a latitude of 999 or a QoS of 5) are rejected with a clear
   message and nothing is written.
-- **Rules** — YAML editor for the rule list, fully validated before saving; on
-  error your text is kept and the file is left untouched. Includes a metrics/
-  operators reference and an "append example rule" helper.
+- **Rules** — two ways to edit the rule list, both fully validated before
+  saving (on error nothing is written):
+  - a **form builder** (default) — add/remove rules and conditions, pick the
+    metric/operator from menus with the value input adapting to the metric
+    (number, true/false, or text), and choose ANY/ALL when a rule has multiple
+    conditions;
+  - a **YAML (advanced)** editor for power users, with a metrics/operators
+    reference and an "append example rule" helper.
 
 Two extra endpoints are available:
 

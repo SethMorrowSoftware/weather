@@ -588,45 +588,397 @@ def settings():
 
 
 # ---------------------------------------------------------------------------
-# Rules (raw YAML editor for the rules list)
+# Rules — structured form builder + raw YAML editor
 # ---------------------------------------------------------------------------
+# Single source of truth for which metrics exist, their value type, and the
+# operators each accepts. Shared with the browser (serialized into the page) so
+# the builder and the server validate against exactly the same rules.
+RULE_METRICS = {
+    "is_raining":                {"type": "bool",   "ops": ["==", "!="]},
+    "precip_accum_in":           {"type": "number", "ops": ["<", "<=", ">", ">=", "==", "!="]},
+    "precipitation_probability": {"type": "number", "ops": ["<", "<=", ">", ">=", "==", "!="]},
+    "temperature":               {"type": "number", "ops": ["<", "<=", ">", ">=", "==", "!="]},
+    "wind_speed_mph":            {"type": "number", "ops": ["<", "<=", ">", ">=", "==", "!="]},
+    "humidity":                  {"type": "number", "ops": ["<", "<=", ">", ">=", "==", "!="]},
+    "short_forecast":            {"type": "text",   "ops": ["contains", "equals"]},
+    "active_alert":              {"type": "alert",  "ops": ["any", "contains", "equals"]},
+}
+
+
+def _coerce_cond_value(metric, operator, raw):
+    """Validate a metric/operator pair and coerce the value to the right type.
+
+    Returns the typed value, or None when the operator needs no value
+    (active_alert + any). Raises ValueError with a human message on anything
+    the builder shouldn't have allowed through."""
+    meta = RULE_METRICS.get(metric)
+    if meta is None:
+        raise ValueError(f"unknown metric '{metric}'")
+    if operator not in meta["ops"]:
+        raise ValueError(f"operator '{operator}' is not valid for metric '{metric}'")
+    if meta["type"] == "alert" and operator == "any":
+        return None
+    if meta["type"] == "bool":
+        return str(raw).strip().lower() in ("true", "1", "yes", "on")
+    if meta["type"] == "number":
+        try:
+            return _num(str(raw))
+        except ValueError:
+            raise ValueError(f"metric '{metric}' needs a numeric value")
+    s = "" if raw is None else str(raw)
+    if s == "":
+        raise ValueError(f"metric '{metric}' needs a value")
+    return s
+
+
+def _rules_from_structured(items):
+    """Build a validated rules list from the builder's JSON payload."""
+    if not isinstance(items, list) or not items:
+        raise ValueError("add at least one rule")
+    out = []
+    for idx, it in enumerate(items, 1):
+        if not isinstance(it, dict):
+            raise ValueError(f"rule #{idx} is malformed")
+        name = str(it.get("name", "")).strip()
+        topic = str(it.get("topic", "")).strip()
+        on_match = it.get("on_match", "")
+        on_match = "" if on_match is None else str(on_match)
+        if not name:
+            raise ValueError(f"rule #{idx}: a name is required")
+        if not topic:
+            raise ValueError(f"rule '{name}': a topic is required")
+        if on_match == "":
+            raise ValueError(f"rule '{name}': the on_match payload is required")
+
+        conds = []
+        for c in (it.get("conditions") or []):
+            if not isinstance(c, dict):
+                continue
+            metric = str(c.get("metric", "")).strip()
+            if not metric:
+                continue
+            operator = str(c.get("operator", "")).strip()
+            try:
+                val = _coerce_cond_value(metric, operator, c.get("value"))
+            except ValueError as e:
+                raise ValueError(f"rule '{name}': {e}")
+            cond = {"metric": metric, "operator": _qstr(operator)}
+            if val is not None:
+                cond["value"] = _qstr(val) if isinstance(val, str) else val
+            conds.append(cond)
+        if not conds:
+            raise ValueError(f"rule '{name}': add at least one condition")
+
+        combine = str(it.get("combine", "")).strip().lower()
+        if len(conds) == 1:
+            when = conds[0]
+        else:
+            if combine not in ("any", "all"):
+                combine = "any"
+            when = {combine: conds}
+
+        rule = {"name": _qstr(name)}
+        desc = str(it.get("description", "")).strip()
+        if desc:
+            rule["description"] = _qstr(desc)
+        rule["when"] = when
+        rule["topic"] = _qstr(topic)
+        rule["on_match"] = _qstr(on_match)
+        on_clear = it.get("on_clear")
+        if on_clear not in (None, ""):
+            rule["on_clear"] = _qstr(str(on_clear))
+        out.append(rule)
+    return out
+
+
+def _value_to_str(v):
+    if v is None:
+        return ""
+    if isinstance(v, bool):
+        return "true" if v else "false"
+    return str(v)
+
+
+def _rule_to_structured(rule):
+    """Flatten a stored rule into the builder's editable shape."""
+    if not isinstance(rule, dict):
+        return None
+    when = rule.get("when")
+    combine, raw = "any", []
+    if isinstance(when, dict) and ("any" in when or "all" in when):
+        combine = "any" if "any" in when else "all"
+        raw = when.get(combine) or []
+    elif isinstance(when, dict):
+        raw = [when]
+    conds = []
+    for c in raw:
+        if not isinstance(c, dict):
+            continue
+        op = c.get("operator")
+        conds.append({
+            "metric": str(c.get("metric", "")),
+            "operator": "" if op is None else str(op),
+            "value": _value_to_str(c.get("value")),
+        })
+    return {
+        "name": str(rule.get("name", "")),
+        "description": str(rule.get("description", "")),
+        "topic": str(rule.get("topic", "")),
+        "on_match": _value_to_str(rule.get("on_match")),
+        "on_clear": _value_to_str(rule.get("on_clear")),
+        "combine": combine,
+        "conditions": conds,
+    }
+
+
+def _structured_list(cfg):
+    return [s for s in (_rule_to_structured(r) for r in _to_plain(cfg.get("rules", [])))
+            if s is not None]
+
+
 RULES = """
-<form method="post"><div class="card">
-  <h3>Rules</h3>
-  <p class="muted">YAML for the <code>rules:</code> list. The first rule controls
-   irrigation. A rule's <code>when</code> can be a single condition or an
-   <code>any</code> (OR) / <code>all</code> (AND) group. The whole list is
-   validated before saving; on error nothing is written and your text is kept.</p>
-  <label>rules:</label>
-  <textarea name="rules_yaml" id="rules_yaml" spellcheck="false">{{ rules_yaml }}</textarea>
-  <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
-    <button type="submit">Save rules</button>
-    <button type="button" id="add-example" style="background:#1d2c49">Append example rule</button>
+<style>
+ .tabs{display:flex;gap:6px;margin:6px 0 16px}
+ .tab{margin:0;background:#0a1322;color:var(--muted);border:1px solid var(--line);
+   border-radius:9px;padding:8px 16px;font-weight:600;font-size:14px;cursor:pointer}
+ .tab.active{background:#1d2c49;color:#fff;border-color:var(--accent)}
+ .rule-card{background:#0a1322;border:1px solid var(--line);border-radius:12px;
+   padding:16px 18px;margin-bottom:14px}
+ .rule-card .rhead{display:flex;justify-content:space-between;align-items:center;gap:10px}
+ .rule-card .rhead .idx{font-size:12px;color:var(--muted2);font-weight:700;text-transform:uppercase;letter-spacing:.08em}
+ .cond{align-items:flex-end}
+ .cond .rm{flex:0 0 auto;min-width:0}
+ button.danger{background:#3a1115;color:#fecaca;box-shadow:0 0 0 1px #7f1d1d inset}
+ button.danger:hover{background:#511a20}
+ button.mini{padding:8px 12px;margin-top:0}
+ .combine-wrap{margin-top:6px}
+</style>
+<form method="post" id="rules-form">
+  <input type="hidden" name="mode" id="mode" value="form">
+  <input type="hidden" name="rules_json" id="rules_json">
+  <div class="card">
+    <h3>Rules</h3>
+    <p class="muted">The first rule controls irrigation. Each rule publishes its
+     <code>on_match</code> payload to its topic when its condition becomes true,
+     and <code>on_clear</code> when it clears. Build rules with the form, or edit
+     the raw YAML directly — both are validated before saving.</p>
+
+    <div class="tabs">
+      <button type="button" class="tab" data-tab="form">Form builder</button>
+      <button type="button" class="tab" data-tab="yaml">YAML (advanced)</button>
+    </div>
+
+    <div id="tab-form" class="tabpane">
+      <div id="builder"></div>
+      <div class="btnrow">
+        <button type="button" class="secondary mini" id="add-rule">+ Add rule</button>
+      </div>
+      <div class="field-err" id="form-err"></div>
+      <button type="submit" id="save-form">Save rules</button>
+    </div>
+
+    <div id="tab-yaml" class="tabpane" style="display:none">
+      <label>rules:</label>
+      <textarea name="rules_yaml" id="rules_yaml" spellcheck="false">{{ rules_yaml }}</textarea>
+      <div class="btnrow">
+        <button type="submit" id="save-yaml">Save rules</button>
+        <button type="button" class="secondary mini" id="add-example">Append example rule</button>
+      </div>
+    </div>
+
+    <details style="margin-top:18px">
+      <summary class="muted" style="cursor:pointer">Available metrics &amp; operators</summary>
+      <table style="margin-top:10px">
+        <thead><tr><th>Metric</th><th>Meaning</th><th>Operators</th></tr></thead>
+        <tbody>
+          <tr><td><code>is_raining</code></td><td>precipitating right now</td><td><code>== !=</code></td></tr>
+          <tr><td><code>precip_accum_in</code></td><td>measured rain over lookback (in)</td><td><code>&lt; &lt;= &gt; &gt;= == !=</code></td></tr>
+          <tr><td><code>precipitation_probability</code></td><td>forecast chance (%)</td><td><code>&lt; &lt;= &gt; &gt;= == !=</code></td></tr>
+          <tr><td><code>temperature</code></td><td>air temp (°F)</td><td><code>&lt; &lt;= &gt; &gt;= == !=</code></td></tr>
+          <tr><td><code>wind_speed_mph</code></td><td>wind speed (mph)</td><td><code>&lt; &lt;= &gt; &gt;= == !=</code></td></tr>
+          <tr><td><code>humidity</code></td><td>relative humidity (%)</td><td><code>&lt; &lt;= &gt; &gt;= == !=</code></td></tr>
+          <tr><td><code>short_forecast</code></td><td>text e.g. "Light Rain"</td><td><code>contains equals</code></td></tr>
+          <tr><td><code>active_alert</code></td><td>NWS watches/warnings</td><td><code>any contains equals</code></td></tr>
+        </tbody>
+      </table>
+    </details>
   </div>
-  <details style="margin-top:16px">
-    <summary class="muted" style="cursor:pointer">Available metrics &amp; operators</summary>
-    <table style="margin-top:10px">
-      <thead><tr><th>Metric</th><th>Meaning</th><th>Operators</th></tr></thead>
-      <tbody>
-        <tr><td><code>is_raining</code></td><td>precipitating right now</td><td><code>== !=</code></td></tr>
-        <tr><td><code>precip_accum_in</code></td><td>measured rain over lookback (in)</td><td><code>&lt; &lt;= &gt; &gt;= == !=</code></td></tr>
-        <tr><td><code>precipitation_probability</code></td><td>forecast chance (%)</td><td><code>&lt; &lt;= &gt; &gt;= == !=</code></td></tr>
-        <tr><td><code>temperature</code></td><td>air temp (°F)</td><td><code>&lt; &lt;= &gt; &gt;= == !=</code></td></tr>
-        <tr><td><code>wind_speed_mph</code></td><td>wind speed (mph)</td><td><code>&lt; &lt;= &gt; &gt;= == !=</code></td></tr>
-        <tr><td><code>humidity</code></td><td>relative humidity (%)</td><td><code>&lt; &lt;= &gt; &gt;= == !=</code></td></tr>
-        <tr><td><code>short_forecast</code></td><td>text e.g. "Light Rain"</td><td><code>contains equals</code></td></tr>
-        <tr><td><code>active_alert</code></td><td>NWS watches/warnings</td><td><code>any contains equals</code></td></tr>
-      </tbody>
-    </table>
-  </details>
-</div></form>
+</form>
 <script>
-const EXAMPLE = "\\n- name: high_wind_hold\\n  description: \\"Pause watering in high wind\\"\\n  when:\\n    metric: wind_speed_mph\\n    operator: \\">=\\"\\n    value: 25\\n  topic: \\"facility/weather/high_wind\\"\\n  on_match: \\"1\\"\\n  on_clear: \\"0\\"\\n";
-document.getElementById("add-example").addEventListener("click", () => {
-  const ta = document.getElementById("rules_yaml");
-  ta.value = ta.value.replace(/\\s*$/, "") + "\\n" + EXAMPLE;
-  ta.focus();
+const METRICS = {{ metrics|tojson }};
+const INITIAL = {{ structured|tojson }};
+const ACTIVE_TAB = {{ active_tab|tojson }};
+const METRIC_NAMES = Object.keys(METRICS);
+const builder = document.getElementById("builder");
+
+function el(tag, cls, html){ const e=document.createElement(tag); if(cls)e.className=cls; if(html!=null)e.innerHTML=html; return e; }
+function opt(v, label, sel){ const o=document.createElement("option"); o.value=v; o.textContent=label||v; if(sel)o.selected=true; return o; }
+
+function valueControl(metric, value){
+  const meta = METRICS[metric] || {type:"text"};
+  let c;
+  if(meta.type==="bool"){
+    c=document.createElement("select"); c.className="c-val";
+    c.appendChild(opt("true","true", String(value)==="true"));
+    c.appendChild(opt("false","false", String(value)!=="true"));
+  } else if(meta.type==="number"){
+    c=document.createElement("input"); c.className="c-val"; c.type="number"; c.step="any";
+    c.value = value!=null ? value : ""; c.placeholder="number";
+  } else {
+    c=document.createElement("input"); c.className="c-val"; c.type="text";
+    c.value = value!=null ? value : ""; c.placeholder="text";
+  }
+  return c;
+}
+
+function fillOps(sel, metric, chosen){
+  sel.innerHTML="";
+  const ops=(METRICS[metric]||{ops:[]}).ops;
+  ops.forEach(o=> sel.appendChild(opt(o,o, o===chosen)));
+  if(!ops.includes(chosen) && ops.length) sel.value=ops[0];
+}
+
+function condRow(cond){
+  cond = cond || {metric:METRIC_NAMES[0], operator:"", value:""};
+  const row = el("div","cond row");
+  const metricWrap = el("div"); const m = document.createElement("select"); m.className="c-metric";
+  METRIC_NAMES.forEach(n=> m.appendChild(opt(n,n, n===cond.metric)));
+  if(!METRICS[cond.metric]) m.value=METRIC_NAMES[0];
+  metricWrap.appendChild(m);
+  const opWrap = el("div"); const o=document.createElement("select"); o.className="c-op";
+  fillOps(o, m.value, cond.operator); opWrap.appendChild(o);
+  const valWrap = el("div","c-val-wrap"); valWrap.appendChild(valueControl(m.value, cond.value));
+  const rmWrap = el("div","rm"); const rm=el("button","secondary danger mini","×"); rm.type="button";
+  rmWrap.appendChild(rm);
+
+  function syncValVisible(){
+    const meta=METRICS[m.value]||{};
+    valWrap.style.display = (meta.type==="alert" && o.value==="any") ? "none" : "";
+  }
+  m.addEventListener("change", ()=>{ fillOps(o, m.value, o.value);
+    valWrap.innerHTML=""; valWrap.appendChild(valueControl(m.value, null)); syncValVisible(); });
+  o.addEventListener("change", syncValVisible);
+  rm.addEventListener("click", ()=>{ const card=row.closest(".rule-card"); row.remove(); refreshCombine(card); });
+  syncValVisible();
+  row.appendChild(metricWrap); row.appendChild(opWrap); row.appendChild(valWrap); row.appendChild(rmWrap);
+  return row;
+}
+
+function refreshCombine(card){
+  const conds = card.querySelectorAll(".cond").length;
+  card.querySelector(".combine-wrap").style.display = conds>1 ? "" : "none";
+}
+
+function ruleCard(rule){
+  rule = rule || {name:"",description:"",topic:"",on_match:"",on_clear:"",combine:"any",conditions:[]};
+  const card = el("div","rule-card");
+  card.innerHTML =
+    '<div class="rhead"><span class="idx"></span></div>'+
+    '<div class="row"><div><label>Name</label><input class="f-name"></div>'+
+    '<div><label>Topic</label><input class="f-topic"></div></div>'+
+    '<label>Description <span class="hint">(optional)</span></label><input class="f-desc">'+
+    '<div class="row"><div><label>Payload when matched <span class="hint">(on_match)</span></label><input class="f-onmatch"></div>'+
+    '<div><label>Payload when cleared <span class="hint">(on_clear, optional)</span></label><input class="f-onclear"></div></div>'+
+    '<div class="combine-wrap"><label>When there are multiple conditions, match</label>'+
+    '<select class="f-combine"></select></div>'+
+    '<label style="margin-top:14px">Conditions</label><div class="conds"></div>'+
+    '<div class="btnrow"><button type="button" class="secondary mini add-cond">+ Add condition</button>'+
+    '<button type="button" class="danger mini remove-rule">Remove rule</button></div>';
+  card.querySelector(".f-name").value = rule.name||"";
+  card.querySelector(".f-topic").value = rule.topic||"";
+  card.querySelector(".f-desc").value = rule.description||"";
+  card.querySelector(".f-onmatch").value = rule.on_match||"";
+  card.querySelector(".f-onclear").value = rule.on_clear||"";
+  const comb = card.querySelector(".f-combine");
+  comb.appendChild(opt("any","ANY is true (OR)", rule.combine!=="all"));
+  comb.appendChild(opt("all","ALL are true (AND)", rule.combine==="all"));
+  const conds = card.querySelector(".conds");
+  (rule.conditions && rule.conditions.length ? rule.conditions : [null]).forEach(c=> conds.appendChild(condRow(c)));
+  card.querySelector(".add-cond").addEventListener("click", ()=>{ conds.appendChild(condRow()); refreshCombine(card); });
+  card.querySelector(".remove-rule").addEventListener("click", ()=>{ card.remove(); reindex(); });
+  refreshCombine(card);
+  return card;
+}
+
+function reindex(){
+  [...builder.querySelectorAll(".rule-card")].forEach((c,i)=>{
+    c.querySelector(".idx").textContent = "Rule "+(i+1)+(i===0?" · irrigation":"");
+  });
+}
+
+function collect(){
+  return [...builder.querySelectorAll(".rule-card")].map(card=>{
+    const conds = [...card.querySelectorAll(".cond")].map(row=>{
+      const metric=row.querySelector(".c-metric").value;
+      const operator=row.querySelector(".c-op").value;
+      const meta=METRICS[metric]||{};
+      const valWrap=row.querySelector(".c-val-wrap");
+      let value="";
+      if(!(meta.type==="alert" && operator==="any")){
+        const ctrl=valWrap.querySelector(".c-val"); value=ctrl?ctrl.value:"";
+      }
+      return {metric, operator, value};
+    });
+    return {
+      name: card.querySelector(".f-name").value.trim(),
+      description: card.querySelector(".f-desc").value.trim(),
+      topic: card.querySelector(".f-topic").value.trim(),
+      on_match: card.querySelector(".f-onmatch").value,
+      on_clear: card.querySelector(".f-onclear").value,
+      combine: card.querySelector(".f-combine").value,
+      conditions: conds,
+    };
+  });
+}
+
+function validate(data){
+  if(!data.length) return "Add at least one rule.";
+  for(let i=0;i<data.length;i++){
+    const r=data[i], label="Rule "+(i+1);
+    if(!r.name) return label+": name is required.";
+    if(!r.topic) return "Rule '"+r.name+"': topic is required.";
+    if(r.on_match==="") return "Rule '"+r.name+"': the on_match payload is required.";
+    if(!r.conditions.length) return "Rule '"+r.name+"': add at least one condition.";
+    for(const c of r.conditions){
+      const meta=METRICS[c.metric]||{};
+      if(meta.type==="alert" && c.operator==="any") continue;
+      if(c.value==="") return "Rule '"+r.name+"': the "+c.metric+" condition needs a value.";
+      if(meta.type==="number" && isNaN(Number(c.value))) return "Rule '"+r.name+"': "+c.metric+" needs a numeric value.";
+    }
+  }
+  return "";
+}
+
+document.getElementById("add-rule").addEventListener("click", ()=>{ builder.appendChild(ruleCard()); reindex(); });
+
+document.querySelectorAll(".tab").forEach(t=> t.addEventListener("click", ()=>{
+  document.querySelectorAll(".tab").forEach(x=>x.classList.remove("active"));
+  t.classList.add("active");
+  const which=t.dataset.tab;
+  document.getElementById("tab-form").style.display = which==="form"?"":"none";
+  document.getElementById("tab-yaml").style.display = which==="yaml"?"":"none";
+}));
+
+document.getElementById("save-form").addEventListener("click", e=>{
+  document.getElementById("mode").value="form";
+  const data=collect(); const err=validate(data);
+  const box=document.getElementById("form-err");
+  if(err){ e.preventDefault(); box.textContent=err; box.style.color="#fda4a4"; return; }
+  box.textContent="";
+  document.getElementById("rules_json").value=JSON.stringify(data);
 });
+document.getElementById("save-yaml").addEventListener("click", ()=>{ document.getElementById("mode").value="yaml"; });
+
+const EXAMPLE = "\\n- name: high_wind_hold\\n  description: \\"Pause watering in high wind\\"\\n  when:\\n    metric: wind_speed_mph\\n    operator: \\">=\\"\\n    value: 25\\n  topic: \\"facility/weather/high_wind\\"\\n  on_match: \\"1\\"\\n  on_clear: \\"0\\"\\n";
+document.getElementById("add-example").addEventListener("click", ()=>{
+  const ta=document.getElementById("rules_yaml");
+  ta.value=ta.value.replace(/\\s*$/,"")+"\\n"+EXAMPLE; ta.focus();
+});
+
+// initial render
+(INITIAL.length ? INITIAL : [null]).forEach(r=> builder.appendChild(ruleCard(r)));
+reindex();
+document.querySelector('.tab[data-tab="'+(ACTIVE_TAB==="yaml"?"yaml":"form")+'"]').click();
 </script>
 """
 
@@ -636,30 +988,47 @@ document.getElementById("add-example").addEventListener("click", () => {
 def rules():
     cfg = load_raw()
     msg = msgclass = None
+    mode = request.form.get("mode", "form") if request.method == "POST" else "form"
+    rules_yaml_override = None
+    structured_override = None
+
     if request.method == "POST":
         try:
-            # Parse with ruamel (YAML 1.2): unlike PyYAML's 1.1 loader it does
-            # NOT turn unquoted ON/OFF/YES/NO into booleans, so payloads survive.
-            if _HAVE_RUAMEL:
-                parsed = _to_plain(_yaml.load(request.form["rules_yaml"]))
+            if mode == "form":
+                items = json.loads(request.form.get("rules_json", "[]"))
+                cfg["rules"] = _rules_from_structured(items)
             else:
-                import yaml as _y
-                parsed = _y.safe_load(request.form["rules_yaml"])
-            if not isinstance(parsed, list) or not parsed:
-                raise ValueError("rules must be a non-empty YAML list")
-            cfg["rules"] = _protect(parsed)
+                # Parse with ruamel (YAML 1.2): unlike PyYAML's 1.1 loader it does
+                # NOT turn unquoted ON/OFF/YES/NO into booleans, so payloads survive.
+                rules_yaml_override = request.form.get("rules_yaml", "")
+                if _HAVE_RUAMEL:
+                    parsed = _to_plain(_yaml.load(rules_yaml_override))
+                else:
+                    import yaml as _y
+                    parsed = _y.safe_load(rules_yaml_override)
+                if not isinstance(parsed, list) or not parsed:
+                    raise ValueError("rules must be a non-empty YAML list")
+                cfg["rules"] = _protect(parsed)
             save_config(cfg)
             msg, msgclass = "Rules saved. They apply on the next poll cycle.", "ok"
             cfg = load_raw()
+            rules_yaml_override = None  # show the freshly normalized YAML
         except Exception as e:
             msg, msgclass = f"Could not save: {e}", "err"
-            # keep the user's text on screen so edits aren't lost
-            body = render_template_string(RULES, rules_yaml=request.form["rules_yaml"])
-            return page(body, page="rules", msg=msg, msgclass=msgclass)
+            cfg = load_raw()
+            if mode == "form":
+                try:  # preserve the user's in-progress builder edits
+                    structured_override = json.loads(request.form.get("rules_json", "[]"))
+                except Exception:
+                    structured_override = None
 
     import yaml as _y2
-    rules_yaml = _y2.safe_dump(_to_plain(cfg["rules"]), sort_keys=False)
-    body = render_template_string(RULES, rules_yaml=rules_yaml)
+    rules_yaml = (rules_yaml_override if rules_yaml_override is not None
+                  else _y2.safe_dump(_to_plain(cfg["rules"]), sort_keys=False))
+    structured = structured_override if structured_override is not None else _structured_list(cfg)
+    body = render_template_string(
+        RULES, rules_yaml=rules_yaml, structured=structured,
+        metrics=RULE_METRICS, active_tab=mode)
     return page(body, page="rules", msg=msg, msgclass=msgclass,
                 title="Rules · Precipitation → MQTT")
 
