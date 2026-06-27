@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark light">
+<title>Dashboard · Precipitation → MQTT</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%8C%A7%3C/text%3E%3C/svg%3E">
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+<div class="banner">📦 <b>Static demo</b> — sample data, nothing is published or saved. The live app is <code>webui.py</code>.</div>
+<header>
+  <h1>🌧 Precipitation → MQTT</h1>
+  <nav>
+    <a href="index.html" class="active">Dashboard</a>
+    <a href="settings.html">Settings</a>
+    <a href="rules.html">Rules</a>
+  </nav>
+  <span class="spacer"></span>
+  <span class="conn" id="connstate"><span class="dot idle"></span>weather-mqtt</span>
+</header>
+
+<main>
+  <div class="card">
+    <div class="eyebrow">Irrigation directive</div>
+    <div class="big unknown" id="directive">…</div>
+    <div class="muted" id="directive-sub">Loading current conditions…</div>
+  </div>
+
+  <div class="card">
+    <div class="eyebrow" style="margin-bottom:8px">Demo controls</div>
+    <div class="controls">
+      <button type="button" class="chip" data-scn="dry">☀ Dry / clear</button>
+      <button type="button" class="chip active" data-scn="wet">🌧 Raining now</button>
+      <button type="button" class="chip" data-scn="accum">💧 Rained earlier</button>
+      <button type="button" class="chip" data-scn="freeze">❄ Freezing</button>
+      <button type="button" class="chip" data-scn="offline">⚠ Broker offline</button>
+    </div>
+    <p class="muted" style="margin-top:10px">Pick a scenario to see how the dashboard and the
+      <code>INHIBIT</code>/<code>ALLOW</code> directive react. Values also drift slightly every few seconds
+      to mimic a live feed.</p>
+  </div>
+
+  <div class="card">
+    <div class="toprow">
+      <div class="eyebrow">Current conditions</div>
+      <div class="muted" id="updated">—</div>
+    </div>
+    <div class="grid" style="margin-top:12px">
+      <div class="metric"><div class="v" id="m_rain">—</div><div class="k">raining now</div></div>
+      <div class="metric"><div class="v" id="m_accum">—</div><div class="k" id="m_accum_k">rain last window</div></div>
+      <div class="metric"><div class="v" id="m_prob">—</div><div class="k">forecast chance</div></div>
+      <div class="metric"><div class="v" id="m_temp">—</div><div class="k">temperature</div></div>
+      <div class="metric"><div class="v" id="m_hum">—</div><div class="k">humidity</div></div>
+      <div class="metric"><div class="v" id="m_wind">—</div><div class="k">wind mph</div></div>
+    </div>
+    <p class="muted" style="margin-top:14px" id="forecast">—</p>
+  </div>
+
+  <div class="card">
+    <div class="eyebrow" style="margin-bottom:10px">Rules</div>
+    <table>
+      <thead><tr><th>Rule</th><th>Topic</th><th>State</th><th>Payload</th><th>Last change</th></tr></thead>
+      <tbody id="rulebody"><tr><td colspan="5" class="muted">Loading…</td></tr></tbody>
+    </table>
+  </div>
+
+  <p class="muted">Live — updates every few seconds. <span id="staleness"></span></p>
+</main>
+
+<footer>Precipitation → MQTT controller · demo build · data source: National Weather Service (api.weather.gov)</footer>
+<div id="toast"></div>
+<script src="assets/app.js"></script>
+</body>
+</html>

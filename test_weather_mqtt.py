@@ -134,6 +134,138 @@ def test_load_config_coerces_boolean_payloads(tmp=None):
         os.unlink(p)
 
 
+def _min_cfg(**over):
+    cfg = {
+        "location": {"latitude": 41.0, "longitude": -74.0},
+        "user_agent": "x (a@b.com)",
+        "mqtt": {},
+        "rules": [{
+            "name": "r", "topic": "t", "on_match": "ON", "on_clear": "OFF",
+            "when": {"metric": "temperature", "operator": "<", "value": 5},
+        }],
+    }
+    cfg.update(over)
+    return cfg
+
+
+def test_validate_clamps_poll_and_lookback():
+    cfg = w.validate_config(_min_cfg(poll_interval_minutes=0,
+                                     precipitation={"lookback_hours": 100000}))
+    assert cfg["poll_interval_minutes"] == w.MIN_POLL_MINUTES
+    assert cfg["precipitation"]["lookback_hours"] == w.MAX_LOOKBACK_HOURS
+    cfg = w.validate_config(_min_cfg(precipitation={"lookback_hours": -5}))
+    assert cfg["precipitation"]["lookback_hours"] == w.MIN_LOOKBACK_HOURS
+
+
+def test_validate_clamps_qos_and_port():
+    cfg = w.validate_config(_min_cfg(mqtt={"qos": 9, "port": 99999}))
+    assert cfg["mqtt"]["qos"] == 1
+    assert cfg["mqtt"]["port"] == 8080  # clamp helper falls back on out-of-range
+
+
+def test_validate_rejects_bad_coordinates():
+    for bad in ({"latitude": 200, "longitude": 0}, {"latitude": 0, "longitude": 999}):
+        try:
+            w.validate_config(_min_cfg(location=bad))
+            raise AssertionError(f"expected ValueError for {bad}")
+        except ValueError:
+            pass
+
+
+def test_validate_rejects_missing_user_agent():
+    cfg = _min_cfg()
+    cfg["user_agent"] = "   "
+    try:
+        w.validate_config(cfg)
+        raise AssertionError("expected ValueError for blank user_agent")
+    except ValueError:
+        pass
+
+
+def test_validate_rejects_empty_rules():
+    try:
+        w.validate_config(_min_cfg(rules=[]))
+        raise AssertionError("expected ValueError for empty rules")
+    except ValueError:
+        pass
+
+
+def test_validate_string_numbers_are_coerced():
+    cfg = w.validate_config(_min_cfg(
+        location={"latitude": "41.5", "longitude": "-74.2"},
+        poll_interval_minutes="30"))
+    assert cfg["location"]["latitude"] == 41.5
+    assert cfg["poll_interval_minutes"] == 30
+
+
+def test_webui_settings_roundtrip_and_validation():
+    """Web UI save path: valid POST persists, invalid POST is rejected.
+
+    Skipped automatically if Flask/ruamel (the optional web extras) aren't
+    installed, so the monitor-only test run still passes.
+    """
+    try:
+        import webui
+    except Exception as e:  # Flask / ruamel not installed -> skip, don't fail
+        print(f"  SKIP  test_webui_settings_roundtrip_and_validation ({e})")
+        return
+
+    import tempfile, os, yaml
+    base = {
+        "location": {"latitude": 41.0, "longitude": -74.0},
+        "user_agent": "x (a@b.com)",
+        "poll_interval_minutes": 15,
+        "precipitation": {"lookback_hours": 24},
+        "mqtt": {"host": "localhost", "port": 1883, "qos": 1, "retain": True},
+        "rules": [{"name": "irrigation_rain_inhibit", "topic": "irrigation/rain_inhibit",
+                   "on_match": "INHIBIT", "on_clear": "ALLOW",
+                   "when": {"metric": "is_raining", "operator": "==", "value": True}}],
+        "web": {"enabled": True, "host": "0.0.0.0", "port": 8080,
+                "username": "", "password": ""},
+    }
+    p = tempfile.mktemp(suffix=".yaml")
+    with open(p, "w") as f:
+        yaml.safe_dump(base, f)
+    webui.CONFIG_PATH = p
+    app = webui.app
+    app.config["TESTING"] = True
+    c = app.test_client()
+    try:
+        good = {
+            "latitude": "40.5", "longitude": "-75.5", "station_id": "KPHL",
+            "poll_interval_minutes": "20", "user_agent": "y (c@d.com)",
+            "lookback_hours": "12", "always_publish": "true",
+            "mqtt_host": "broker", "mqtt_port": "8883", "mqtt_username": "u",
+            "mqtt_password": "pw", "mqtt_client_id": "cid", "mqtt_qos": "2",
+            "mqtt_retain": "false", "status_topic": "s/t",
+            "web_host": "127.0.0.1", "web_port": "9090",
+            "web_username": "", "web_password": "",
+        }
+        r = c.post("/settings", data=good)
+        assert b"Settings saved" in r.data, "valid settings should save"
+        saved = yaml.safe_load(open(p))
+        assert saved["mqtt"]["qos"] == 2 and saved["mqtt"]["client_id"] == "cid"
+        assert saved["web"]["port"] == 9090 and saved["poll_interval_minutes"] == 20
+        # the monitor must still accept what the UI wrote
+        w.validate_config(yaml.safe_load(open(p)))
+
+        bad = dict(good, latitude="999")
+        r = c.post("/settings", data=bad)
+        assert b"Could not save" in r.data, "out-of-range latitude must be rejected"
+        # file unchanged by the rejected save
+        assert yaml.safe_load(open(p))["location"]["latitude"] == 40.5
+
+        # healthz + api/state respond
+        assert c.get("/healthz").status_code in (200, 500)
+        assert c.get("/api/state").status_code in (200, 503)
+    finally:
+        for suffix in ("", ".bak", ".tmp"):
+            try:
+                os.unlink(p + suffix)
+            except OSError:
+                pass
+
+
 def run():
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     failed = 0

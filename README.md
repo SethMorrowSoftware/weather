@@ -101,21 +101,48 @@ Run the offline logic tests (no network needed):
 ```
 
 - **Dashboard** — live conditions, the current irrigation directive
-  (INHIBIT / ALLOW), every rule's state, and MQTT connection status. It reads
-  the snapshot the monitor writes to `weather_state.json` each cycle.
-- **Settings** — friendly form for location, station, user-agent, poll interval,
-  rain lookback window, and MQTT broker.
-- **Rules** — YAML editor for the rule list, validated before saving.
+  (INHIBIT / ALLOW), every rule's state, and MQTT connection status. It polls
+  `GET /api/state` and updates in place (no full-page reloads), reading the
+  snapshot the monitor writes to `weather_state.json` each cycle.
+- **Settings** — friendly, range-validated form for **location**, station,
+  user-agent, poll interval, rain lookback window, the **MQTT broker** (host,
+  port, credentials, client id, QoS, retain, status topic), and the **web
+  interface itself** (bind host/port and the login username/password). Invalid
+  values (e.g. a latitude of 999 or a QoS of 5) are rejected with a clear
+  message and nothing is written.
+- **Rules** — YAML editor for the rule list, fully validated before saving; on
+  error your text is kept and the file is left untouched. Includes a metrics/
+  operators reference and an "append example rule" helper.
 
-Edits to thresholds, the lookback window, the poll interval, and rules take
-effect on the **next poll cycle** with no restart (the monitor reloads
-`config.yaml` each cycle). Changing **location** or **MQTT connection** settings
-requires restarting the monitor service.
+Two extra endpoints are available:
+
+- `GET /api/state` — the JSON snapshot the dashboard polls (503 until the
+  monitor has written its first cycle).
+- `GET /healthz` — unauthenticated liveness/freshness probe for systemd or an
+  uptime monitor; reports whether the config loads and how fresh the monitor's
+  last update is.
+
+Edits to thresholds, the lookback window, the poll interval, the rules, and the
+**publish-time** MQTT options (QoS, retain, status topic) take effect on the
+**next poll cycle** with no restart (the monitor reloads `config.yaml` each
+cycle). Changing **location**, the **MQTT connection** (host/port/credentials/
+client id), or any **web interface** setting requires restarting the relevant
+service. Out-of-range numbers in `config.yaml` are clamped to safe values with a
+warning rather than crashing the monitor (e.g. a sub-minute poll interval is
+raised to the 1-minute floor so the free NWS API is never hammered).
 
 Configure it under the `web:` section of `config.yaml` (`enabled`, `host`,
 `port`, and optional `username`/`password` for basic auth). It uses Flask's
 development server — fine for a trusted control network. To expose it more
-broadly, put it behind nginx/Caddy and enable auth.
+broadly, put it behind nginx/Caddy and enable auth. When a `username` is set,
+basic-auth credentials are checked in constant time.
+
+### Static UI demo
+
+`demo/` is a **standalone, static** copy of the interface (sample data, no
+backend) you can drop onto any ordinary web host — including shared cPanel
+hosting — to show off the UI without installing anything. Open `demo/index.html`
+or see `demo/README.md` for deployment steps.
 
 ## Run as services
 
