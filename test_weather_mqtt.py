@@ -134,6 +134,61 @@ def test_load_config_coerces_boolean_payloads(tmp=None):
         os.unlink(p)
 
 
+def test_detect_raining_ignores_vicinity_and_fog():
+    # precip near but not at the station must NOT read as raining
+    assert w.detect_raining({"textDescription": "Showers in Vicinity"}) is False
+    assert w.detect_raining({"presentWeather": [{"weather": "rain", "inVicinity": True}]}) is False
+    # freezing fog is not precipitation
+    assert w.detect_raining({"textDescription": "Freezing Fog"}) is False
+    # but real precip still detected, including freezing rain/drizzle
+    assert w.detect_raining({"textDescription": "Freezing Rain"}) is True
+    assert w.detect_raining({"textDescription": "Light Rain"}) is True
+
+
+def test_to_mm_handles_inches():
+    assert w.to_mm(1, "wmoUnit:[in_i]") == 25.4
+    assert w.to_mm(0.5, "wmoUnit:in") == 12.7
+
+
+def test_validate_rejects_bad_conditions():
+    base = {"location": {"latitude": 1, "longitude": 2}, "user_agent": "x (a@b.com)",
+            "mqtt": {}}
+    cases = [
+        ([{"name": "r", "topic": "t", "on_match": "X",
+           "when": {"metric": "bogus", "operator": "<", "value": 1}}], "unknown metric"),
+        ([{"name": "r", "topic": "t", "on_match": "X",
+           "when": {"metric": "temperature", "operator": "contains", "value": 1}}], "not valid"),
+        ([{"name": "r", "topic": "t", "on_match": "X",
+           "when": {"metric": "temperature", "operator": "<", "value": "cold"}}], "must be a number"),
+        ([{"name": "r", "topic": "t", "on_match": "X",
+           "when": {"operator": "<", "value": 1}}], "needs a 'metric'"),
+    ]
+    for rules, needle in cases:
+        try:
+            w.validate_config(dict(base, rules=rules))
+            raise AssertionError(f"expected ValueError containing {needle!r}")
+        except ValueError as e:
+            assert needle in str(e), f"got {e!r}, wanted {needle!r}"
+    # active_alert/any needs no value -> accepted
+    w.validate_config(dict(base, rules=[{
+        "name": "a", "topic": "t", "on_match": "1",
+        "when": {"metric": "active_alert", "operator": "any"}}]))
+
+
+def test_validate_rejects_duplicate_rule_names():
+    cfg = _min_cfg(rules=[
+        {"name": "dup", "topic": "t1", "on_match": "X",
+         "when": {"metric": "temperature", "operator": "<", "value": 5}},
+        {"name": "dup", "topic": "t2", "on_match": "Y",
+         "when": {"metric": "humidity", "operator": ">", "value": 5}},
+    ])
+    try:
+        w.validate_config(cfg)
+        raise AssertionError("expected ValueError for duplicate rule name")
+    except ValueError as e:
+        assert "duplicate" in str(e)
+
+
 def _min_cfg(**over):
     cfg = {
         "location": {"latitude": 41.0, "longitude": -74.0},
