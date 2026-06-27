@@ -11,7 +11,7 @@ ordinary web host (e.g. cPanel) without installing Python, Flask, or MQTT.
 demo/
 ├── index.html      Dashboard  — live-style conditions + irrigation directive
 ├── settings.html   Settings   — full config form with in-browser validation
-├── rules.html      Rules      — YAML rule editor with shape validation
+├── rules.html      Rules      — form rule builder + YAML editor (both validated)
 └── assets/
     ├── style.css   Shared theme (mirrors the live app)
     └── app.js      Mock data + interactivity (no backend, no dependencies)
@@ -53,9 +53,11 @@ This demo is intentionally read-only:
 
 - **No persistence** — "Save" buttons validate input and show a confirmation
   toast, but never write a config file.
-- **Simplified validation** — the Rules editor does a structural/YAML-shape
-  check in JavaScript. The live app parses the YAML fully on the server and
-  round-trips it through the monitor's own validator before saving.
+- **Simplified validation** — the Rules **form builder** validates the same way
+  as the live app (it shares the metric/operator rules), but the **YAML** tab
+  does only a structural/shape check in JavaScript. The live app parses the YAML
+  fully on the server and round-trips everything through the monitor's own
+  validator before saving.
 - **Mock weather** — the Dashboard generates plausible sample data instead of
   polling api.weather.gov.
 

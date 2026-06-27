@@ -109,6 +109,22 @@ button.secondary:hover{background:#26395e}
 .chip:hover{border-color:var(--accent)}
 .chip.active{background:#1d2c49;border-color:var(--accent)}
 
+/* rule builder ------------------------------------------------------------ */
+.tabs{display:flex;gap:6px;margin:6px 0 16px}
+.tab{margin:0;background:#0a1322;color:var(--muted);border:1px solid var(--line);
+  border-radius:9px;padding:8px 16px;font-weight:600;font-size:14px;cursor:pointer}
+.tab:hover{color:#fff}
+.tab.active{background:#1d2c49;color:#fff;border-color:var(--accent)}
+.rule-card{background:#0a1322;border:1px solid var(--line);border-radius:12px;padding:16px 18px;margin-bottom:14px}
+.rule-card .rhead{display:flex;justify-content:space-between;align-items:center;gap:10px}
+.rule-card .rhead .idx{font-size:12px;color:var(--muted2);font-weight:700;text-transform:uppercase;letter-spacing:.08em}
+.cond{align-items:flex-end}
+.cond .rm{flex:0 0 auto;min-width:0}
+button.danger{background:#3a1115;color:#fecaca;box-shadow:0 0 0 1px #7f1d1d inset}
+button.danger:hover{background:#511a20}
+button.mini{padding:8px 12px;margin-top:0}
+.combine-wrap{margin-top:6px}
+
 /* toast ------------------------------------------------------------------- */
 #toast{position:fixed;left:50%;bottom:26px;transform:translateX(-50%) translateY(40px);
   background:#0f2e1c;color:#bbf7d0;box-shadow:0 0 0 1px #14532d inset,0 12px 30px -12px #000;

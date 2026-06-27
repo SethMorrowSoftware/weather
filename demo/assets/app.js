@@ -190,81 +190,220 @@ function isoNow() { return new Date().toISOString().replace(/\.\d+Z$/, "Z"); }
 })();
 
 /* =========================================================================
-   RULES  ·  lightweight YAML-shape validator (the live server uses full YAML)
+   RULES  ·  structured form builder + lightweight YAML-shape validator
+   Mirrors the live webui.py Rules page; client-side only (no persistence).
    ========================================================================= */
 (function rules() {
   const form = document.getElementById("rules-form");
   if (!form) return;
-  const ta = document.getElementById("rules_yaml");
-  const errBox = document.getElementById("rules-err");
-  const METRICS = ["is_raining", "precip_accum_in", "precipitation_probability", "temperature",
-                   "wind_speed_mph", "humidity", "short_forecast", "active_alert"];
 
-  // Heuristic structural check: split top-level "- name:" blocks, require the
-  // four mandatory keys and a recognised metric. Good enough for demo feedback;
-  // the real app parses the YAML properly server-side.
-  function validate(text) {
-    if (!text.trim()) return "Rules list is empty.";
-    const lines = text.replace(/\t/g, "  ").split("\n");
-    const items = [];
-    let cur = null, startLine = 0;
-    lines.forEach((ln, i) => {
-      if (/^- /.test(ln)) {
-        if (cur !== null) items.push({ text: cur, line: startLine });
-        cur = ln + "\n"; startLine = i + 1;
-      } else if (cur !== null) {
-        cur += ln + "\n";
-      } else if (ln.trim() && !ln.startsWith("#")) {
-        // content before the first "- " => not a list
-      }
+  const METRICS = {
+    is_raining:                {type:"bool",   ops:["==","!="]},
+    precip_accum_in:           {type:"number", ops:["<","<=",">",">=","==","!="]},
+    precipitation_probability: {type:"number", ops:["<","<=",">",">=","==","!="]},
+    temperature:               {type:"number", ops:["<","<=",">",">=","==","!="]},
+    wind_speed_mph:            {type:"number", ops:["<","<=",">",">=","==","!="]},
+    humidity:                  {type:"number", ops:["<","<=",">",">=","==","!="]},
+    short_forecast:            {type:"text",   ops:["contains","equals"]},
+    active_alert:              {type:"alert",  ops:["any","contains","equals"]},
+  };
+  const METRIC_NAMES = Object.keys(METRICS);
+  const builder = document.getElementById("builder");
+
+  /* ---- builder ---------------------------------------------------------- */
+  function el(tag, cls, html){ const e=document.createElement(tag); if(cls)e.className=cls; if(html!=null)e.innerHTML=html; return e; }
+  function opt(v, label, sel){ const o=document.createElement("option"); o.value=v; o.textContent=label||v; if(sel)o.selected=true; return o; }
+
+  function valueControl(metric, value){
+    const meta = METRICS[metric] || {type:"text"};
+    let c;
+    if(meta.type==="bool"){
+      c=document.createElement("select"); c.className="c-val";
+      c.appendChild(opt("true","true", String(value)==="true"));
+      c.appendChild(opt("false","false", String(value)!=="true"));
+    } else if(meta.type==="number"){
+      c=document.createElement("input"); c.className="c-val"; c.type="number"; c.step="any";
+      c.value = value!=null ? value : ""; c.placeholder="number";
+    } else {
+      c=document.createElement("input"); c.className="c-val"; c.type="text";
+      c.value = value!=null ? value : ""; c.placeholder="text";
+    }
+    return c;
+  }
+  function fillOps(sel, metric, chosen){
+    sel.innerHTML="";
+    const ops=(METRICS[metric]||{ops:[]}).ops;
+    ops.forEach(o=> sel.appendChild(opt(o,o, o===chosen)));
+    if(!ops.includes(chosen) && ops.length) sel.value=ops[0];
+  }
+  function condRow(cond){
+    cond = cond || {metric:METRIC_NAMES[0], operator:"", value:""};
+    const row = el("div","cond row");
+    const metricWrap = el("div"); const m=document.createElement("select"); m.className="c-metric";
+    METRIC_NAMES.forEach(n=> m.appendChild(opt(n,n, n===cond.metric)));
+    if(!METRICS[cond.metric]) m.value=METRIC_NAMES[0];
+    metricWrap.appendChild(m);
+    const opWrap = el("div"); const o=document.createElement("select"); o.className="c-op";
+    fillOps(o, m.value, cond.operator); opWrap.appendChild(o);
+    const valWrap = el("div","c-val-wrap"); valWrap.appendChild(valueControl(m.value, cond.value));
+    const rmWrap = el("div","rm"); const rm=el("button","secondary danger mini","×"); rm.type="button"; rmWrap.appendChild(rm);
+    function syncValVisible(){
+      const meta=METRICS[m.value]||{};
+      valWrap.style.display = (meta.type==="alert" && o.value==="any") ? "none" : "";
+    }
+    m.addEventListener("change", ()=>{ fillOps(o, m.value, o.value);
+      valWrap.innerHTML=""; valWrap.appendChild(valueControl(m.value, null)); syncValVisible(); });
+    o.addEventListener("change", syncValVisible);
+    rm.addEventListener("click", ()=>{ const card=row.closest(".rule-card"); row.remove(); refreshCombine(card); });
+    syncValVisible();
+    row.appendChild(metricWrap); row.appendChild(opWrap); row.appendChild(valWrap); row.appendChild(rmWrap);
+    return row;
+  }
+  function refreshCombine(card){
+    if(!card) return;
+    card.querySelector(".combine-wrap").style.display = card.querySelectorAll(".cond").length>1 ? "" : "none";
+  }
+  function ruleCard(rule){
+    rule = rule || {name:"",description:"",topic:"",on_match:"",on_clear:"",combine:"any",conditions:[]};
+    const card = el("div","rule-card");
+    card.innerHTML =
+      '<div class="rhead"><span class="idx"></span></div>'+
+      '<div class="row"><div><label>Name</label><input class="f-name"></div>'+
+      '<div><label>Topic</label><input class="f-topic"></div></div>'+
+      '<label>Description <span class="hint">(optional)</span></label><input class="f-desc">'+
+      '<div class="row"><div><label>Payload when matched <span class="hint">(on_match)</span></label><input class="f-onmatch"></div>'+
+      '<div><label>Payload when cleared <span class="hint">(on_clear, optional)</span></label><input class="f-onclear"></div></div>'+
+      '<div class="combine-wrap"><label>When there are multiple conditions, match</label>'+
+      '<select class="f-combine"></select></div>'+
+      '<label style="margin-top:14px">Conditions</label><div class="conds"></div>'+
+      '<div class="btnrow"><button type="button" class="secondary mini add-cond">+ Add condition</button>'+
+      '<button type="button" class="danger mini remove-rule">Remove rule</button></div>';
+    card.querySelector(".f-name").value = rule.name||"";
+    card.querySelector(".f-topic").value = rule.topic||"";
+    card.querySelector(".f-desc").value = rule.description||"";
+    card.querySelector(".f-onmatch").value = rule.on_match||"";
+    card.querySelector(".f-onclear").value = rule.on_clear||"";
+    const comb = card.querySelector(".f-combine");
+    comb.appendChild(opt("any","ANY is true (OR)", rule.combine!=="all"));
+    comb.appendChild(opt("all","ALL are true (AND)", rule.combine==="all"));
+    const conds = card.querySelector(".conds");
+    (rule.conditions && rule.conditions.length ? rule.conditions : [null]).forEach(c=> conds.appendChild(condRow(c)));
+    card.querySelector(".add-cond").addEventListener("click", ()=>{ conds.appendChild(condRow()); refreshCombine(card); });
+    card.querySelector(".remove-rule").addEventListener("click", ()=>{ card.remove(); reindex(); });
+    refreshCombine(card);
+    return card;
+  }
+  function reindex(){
+    [...builder.querySelectorAll(".rule-card")].forEach((c,i)=>{
+      c.querySelector(".idx").textContent = "Rule "+(i+1)+(i===0?" · irrigation":"");
     });
-    if (cur !== null) items.push({ text: cur, line: startLine });
-    if (!items.length) return "Expected a YAML list (each rule starts with '- ').";
-
-    for (let k = 0; k < items.length; k++) {
-      // normalise the leading "- " into indentation so the first key (which
-      // appears as "- name:") is checked the same way as the rest.
-      const blk = items[k].text.replace(/^- /, "  ");
-      const ln = items[k].line, label = "rule #" + (k + 1) + " (line " + ln + ")";
-      for (const key of ["name", "when", "topic", "on_match"]) {
-        if (!new RegExp("(^|\\n)\\s*" + key + ":").test(blk)) return label + ": missing '" + key + "'.";
-      }
-      const metricMatches = blk.match(/metric:\s*([A-Za-z_]+)/g) || [];
-      if (!metricMatches.length) return label + ": needs at least one 'metric:' under 'when'.";
-      for (const mm of metricMatches) {
-        const name = mm.split(":")[1].trim();
-        if (!METRICS.includes(name)) return label + ": unknown metric '" + name + "'.";
-      }
-      const payloads = blk.match(/(on_match|on_clear):\s*([^\n#]*)/g) || [];
-      for (const p of payloads) {
-        const val = p.split(":").slice(1).join(":").trim();
-        if (/^(on|off|yes|no|true|false)$/i.test(val))
-          return label + ": quote the payload \"" + val + "\" (unquoted it becomes a boolean).";
+  }
+  function collect(){
+    return [...builder.querySelectorAll(".rule-card")].map(card=>{
+      const conds = [...card.querySelectorAll(".cond")].map(row=>{
+        const metric=row.querySelector(".c-metric").value;
+        const operator=row.querySelector(".c-op").value;
+        const meta=METRICS[metric]||{};
+        let value="";
+        if(!(meta.type==="alert" && operator==="any")){
+          const ctrl=row.querySelector(".c-val-wrap .c-val"); value=ctrl?ctrl.value:"";
+        }
+        return {metric, operator, value};
+      });
+      return {
+        name: card.querySelector(".f-name").value.trim(),
+        description: card.querySelector(".f-desc").value.trim(),
+        topic: card.querySelector(".f-topic").value.trim(),
+        on_match: card.querySelector(".f-onmatch").value,
+        on_clear: card.querySelector(".f-onclear").value,
+        combine: card.querySelector(".f-combine").value,
+        conditions: conds,
+      };
+    });
+  }
+  function validateForm(data){
+    if(!data.length) return "Add at least one rule.";
+    for(let i=0;i<data.length;i++){
+      const r=data[i], label="Rule "+(i+1);
+      if(!r.name) return label+": name is required.";
+      if(!r.topic) return "Rule '"+r.name+"': topic is required.";
+      if(r.on_match==="") return "Rule '"+r.name+"': the on_match payload is required.";
+      if(!r.conditions.length) return "Rule '"+r.name+"': add at least one condition.";
+      for(const c of r.conditions){
+        const meta=METRICS[c.metric]||{};
+        if(meta.type==="alert" && c.operator==="any") continue;
+        if(c.value==="") return "Rule '"+r.name+"': the "+c.metric+" condition needs a value.";
+        if(meta.type==="number" && isNaN(Number(c.value))) return "Rule '"+r.name+"': "+c.metric+" needs a numeric value.";
       }
     }
     return "";
   }
 
-  function check(showOk) {
-    const err = validate(ta.value);
-    errBox.textContent = err;
-    errBox.style.color = err ? "#fda4a4" : "#86efac";
-    if (!err && showOk) errBox.textContent = "Looks valid ✓";
-    return !err;
+  document.getElementById("add-rule").addEventListener("click", ()=>{ builder.appendChild(ruleCard()); reindex(); });
+  document.querySelectorAll(".tab").forEach(t=> t.addEventListener("click", ()=>{
+    document.querySelectorAll(".tab").forEach(x=>x.classList.remove("active"));
+    t.classList.add("active");
+    document.getElementById("tab-form").style.display = t.dataset.tab==="form"?"":"none";
+    document.getElementById("tab-yaml").style.display = t.dataset.tab==="yaml"?"":"none";
+  }));
+
+  /* ---- YAML tab (heuristic shape check) --------------------------------- */
+  const ta = document.getElementById("rules_yaml");
+  const errBox = document.getElementById("rules-err");
+  function validateYaml(text){
+    if (!text.trim()) return "Rules list is empty.";
+    const lines = text.replace(/\t/g, "  ").split("\n");
+    const items = []; let cur=null, startLine=0;
+    lines.forEach((ln,i)=>{
+      if(/^- /.test(ln)){ if(cur!==null) items.push({text:cur,line:startLine}); cur=ln+"\n"; startLine=i+1; }
+      else if(cur!==null){ cur+=ln+"\n"; }
+    });
+    if(cur!==null) items.push({text:cur,line:startLine});
+    if(!items.length) return "Expected a YAML list (each rule starts with '- ').";
+    for(let k=0;k<items.length;k++){
+      const blk=items[k].text.replace(/^- /,"  ");
+      const label="rule #"+(k+1)+" (line "+items[k].line+")";
+      for(const key of ["name","when","topic","on_match"])
+        if(!new RegExp("(^|\\n)\\s*"+key+":").test(blk)) return label+": missing '"+key+"'.";
+      const mm=blk.match(/metric:\s*([A-Za-z_]+)/g)||[];
+      if(!mm.length) return label+": needs at least one 'metric:' under 'when'.";
+      for(const x of mm){ const n=x.split(":")[1].trim(); if(!METRIC_NAMES.includes(n)) return label+": unknown metric '"+n+"'."; }
+      const pl=blk.match(/(on_match|on_clear):\s*([^\n#]*)/g)||[];
+      for(const p of pl){ const v=p.split(":").slice(1).join(":").trim();
+        if(/^(on|off|yes|no|true|false)$/i.test(v)) return label+": quote the payload \""+v+"\" (unquoted it becomes a boolean)."; }
+    }
+    return "";
   }
-
+  function checkYaml(showOk){
+    const err=validateYaml(ta.value); errBox.textContent=err; errBox.style.color=err?"#fda4a4":"#86efac";
+    if(!err && showOk) errBox.textContent="Looks valid ✓"; return !err;
+  }
   const EXAMPLE = "\n- name: high_wind_hold\n  description: \"Pause watering in high wind\"\n  when:\n    metric: wind_speed_mph\n    operator: \">=\"\n    value: 25\n  topic: \"facility/weather/high_wind\"\n  on_match: \"1\"\n  on_clear: \"0\"\n";
+  document.getElementById("add-example").addEventListener("click", ()=>{ ta.value=ta.value.replace(/\s*$/,"")+"\n"+EXAMPLE; ta.focus(); checkYaml(true); });
+  document.getElementById("check").addEventListener("click", ()=> checkYaml(true));
+  ta.addEventListener("input", ()=>{ errBox.textContent=""; });
 
-  document.getElementById("add-example").addEventListener("click", () => {
-    ta.value = ta.value.replace(/\s*$/, "") + "\n" + EXAMPLE;
-    ta.focus(); check(true);
-  });
-  document.getElementById("check").addEventListener("click", () => check(true));
-  ta.addEventListener("input", () => { errBox.textContent = ""; });
-
-  form.addEventListener("submit", e => {
+  /* ---- submit (mode depends on which Save was clicked) ------------------ */
+  let mode = "form";
+  document.getElementById("save-form").addEventListener("click", ()=> mode="form");
+  document.getElementById("save-yaml").addEventListener("click", ()=> mode="yaml");
+  form.addEventListener("submit", e=>{
     e.preventDefault();
-    if (check(false)) toast("Rules saved (demo — nothing was written).");
-    else toast("Could not save: " + errBox.textContent, true);
+    if(mode==="form"){
+      const data=collect(); const err=validateForm(data);
+      const box=document.getElementById("form-err");
+      box.textContent=err; box.style.color="#fda4a4";
+      if(err){ toast("Could not save: "+err, true); return; }
+      toast("Rules saved (demo — nothing was written).");
+    } else {
+      if(checkYaml(false)) toast("Rules saved (demo — nothing was written).");
+      else toast("Could not save: "+errBox.textContent, true);
+    }
   });
+
+  /* ---- initial render --------------------------------------------------- */
+  const INITIAL = window.DEMO_RULES || [];
+  (INITIAL.length ? INITIAL : [null]).forEach(r=> builder.appendChild(ruleCard(r)));
+  reindex();
+  document.querySelector('.tab[data-tab="form"]').click();
 })();
