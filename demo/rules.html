@@ -58,16 +58,6 @@
   on_match: "INHIBIT"
   on_clear: "ALLOW"
 
-- name: freeze_protection
-  description: "Energize heat trace below freezing"
-  when:
-    metric: temperature
-    operator: "<="
-    value: 35
-  topic: "facility/weather/freeze_protection"
-  on_match: "ON"
-  on_clear: "OFF"
-
 - name: any_nws_alert
   description: "Flag whenever any NWS alert is active"
   when:
@@ -113,9 +103,6 @@ window.DEMO_RULES = [
    topic:"irrigation/rain_inhibit", on_match:"INHIBIT", on_clear:"ALLOW", combine:"any",
    conditions:[{metric:"is_raining",operator:"==",value:"true"},
                {metric:"precip_accum_in",operator:">=",value:"0.25"}]},
-  {name:"freeze_protection", description:"Energize heat trace below freezing",
-   topic:"facility/weather/freeze_protection", on_match:"ON", on_clear:"OFF", combine:"any",
-   conditions:[{metric:"temperature",operator:"<=",value:"35"}]},
   {name:"any_nws_alert", description:"Flag whenever any NWS alert is active",
    topic:"facility/weather/nws_alert", on_match:"1", on_clear:"0", combine:"any",
    conditions:[{metric:"active_alert",operator:"any",value:""}]},

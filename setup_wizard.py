@@ -153,16 +153,6 @@ rules:
     on_match: "INHIBIT"        # published when wet -> hold valves closed
     on_clear: "ALLOW"          # published when dry -> normal watering
 
-  - name: freeze_protection
-    description: "Energize heat trace / drip faucets below freezing"
-    when:
-      metric: temperature
-      operator: "<="
-      value: 35
-    topic: "facility/weather/freeze_protection"
-    on_match: "ON"
-    on_clear: "OFF"
-
   - name: any_nws_alert
     description: "Flag whenever any NWS alert is active for our area"
     when:
