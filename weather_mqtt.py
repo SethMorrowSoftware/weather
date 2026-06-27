@@ -47,39 +47,110 @@ PRECIP_WORDS = (
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
-def load_config(path):
-    with open(path, "r") as f:
-        cfg = yaml.safe_load(f)
+# Sensible floors/limits so a typo in config.yaml (or the web UI) can never put
+# the monitor into a tight loop hammering the free NWS API, or hand paho an
+# illegal QoS. These are clamped (with a warning) rather than fatal so the
+# monitor keeps running on the last-known-good behavior.
+MIN_POLL_MINUTES = 1
+MIN_LOOKBACK_HOURS = 1
+MAX_LOOKBACK_HOURS = 720      # 30 days; NWS observation history is limited anyway
+
+
+def _as_number(value, default, name):
+    """Coerce a YAML scalar to int/float, falling back to default with a warn."""
+    if isinstance(value, bool):  # bool is a subclass of int; reject it explicitly
+        LOG.warning("%s=%r is not a number; using %r", name, value, default)
+        return default
+    if isinstance(value, (int, float)):
+        return value
+    try:
+        s = str(value).strip()
+        return int(s) if s.lstrip("-").isdigit() else float(s)
+    except (TypeError, ValueError):
+        LOG.warning("%s=%r is not a number; using %r", name, value, default)
+        return default
+
+
+def validate_config(cfg):
+    """Validate structure and sanitize/clamp numeric fields in place.
+
+    Raises ValueError for problems that make the config unusable (missing
+    sections, no coordinates, empty rules, malformed rules). Out-of-range
+    numbers are clamped with a warning so a small mistake never takes the
+    monitor down. Returns the same (mutated) cfg for convenience.
+    """
+    if not isinstance(cfg, dict):
+        raise ValueError("config root must be a mapping")
 
     for key in ("location", "user_agent", "mqtt", "rules"):
         if key not in cfg:
             raise ValueError(f"config is missing required section: '{key}'")
-    loc = cfg["location"]
-    if "latitude" not in loc or "longitude" not in loc:
-        raise ValueError("config.location needs 'latitude' and 'longitude'")
 
-    cfg.setdefault("poll_interval_minutes", 15)
+    loc = cfg["location"]
+    if not isinstance(loc, dict) or "latitude" not in loc or "longitude" not in loc:
+        raise ValueError("config.location needs 'latitude' and 'longitude'")
+    lat = _as_number(loc["latitude"], None, "location.latitude")
+    lon = _as_number(loc["longitude"], None, "location.longitude")
+    if lat is None or lon is None:
+        raise ValueError("location.latitude/longitude must be numbers")
+    if not (-90 <= lat <= 90):
+        raise ValueError(f"location.latitude {lat} out of range (-90..90)")
+    if not (-180 <= lon <= 180):
+        raise ValueError(f"location.longitude {lon} out of range (-180..180)")
+    loc["latitude"], loc["longitude"] = lat, lon
+
+    if not cfg.get("user_agent") or not str(cfg["user_agent"]).strip():
+        raise ValueError("user_agent must be set (NWS requires a real contact)")
+
+    if not isinstance(cfg["rules"], list) or not cfg["rules"]:
+        raise ValueError("'rules' must be a non-empty list")
+    for r in cfg["rules"]:
+        if not isinstance(r, dict):
+            raise ValueError("each rule must be a mapping")
+        for req in ("name", "when", "topic", "on_match"):
+            if req not in r:
+                raise ValueError(f"rule '{r.get('name', '?')}' is missing '{req}'")
+
+    # --- defaults + clamping for the forgiving numeric knobs ---
+    poll = _as_number(cfg.get("poll_interval_minutes", 15), 15, "poll_interval_minutes")
+    if poll < MIN_POLL_MINUTES:
+        LOG.warning("poll_interval_minutes=%s is below the %d-minute floor; "
+                    "clamping (be a good citizen of the free NWS API)",
+                    poll, MIN_POLL_MINUTES)
+        poll = MIN_POLL_MINUTES
+    cfg["poll_interval_minutes"] = poll
+
     cfg.setdefault("always_publish", False)
+    cfg["always_publish"] = bool(cfg["always_publish"])
     cfg.setdefault("state_file", "weather_state.json")
 
     precip = cfg.setdefault("precipitation", {})
-    precip.setdefault("lookback_hours", 24)
+    lb = _as_number(precip.get("lookback_hours", 24), 24, "precipitation.lookback_hours")
+    lb = max(MIN_LOOKBACK_HOURS, min(MAX_LOOKBACK_HOURS, int(lb)))
+    precip["lookback_hours"] = lb
 
     web = cfg.setdefault("web", {})
     web.setdefault("enabled", True)
     web.setdefault("host", "0.0.0.0")
-    web.setdefault("port", 8080)
+    web["port"] = _clamp_port(_as_number(web.get("port", 8080), 8080, "web.port"))
     web.setdefault("username", "")     # blank = no auth (use only on trusted LAN)
     web.setdefault("password", "")
 
     mq = cfg["mqtt"]
+    if not isinstance(mq, dict):
+        raise ValueError("config.mqtt must be a mapping")
     mq.setdefault("host", "localhost")
-    mq.setdefault("port", 1883)
+    mq["port"] = _clamp_port(_as_number(mq.get("port", 1883), 1883, "mqtt.port"))
     mq.setdefault("username", "")
     mq.setdefault("password", "")
     mq.setdefault("client_id", "weather-mqtt-controller")
-    mq.setdefault("qos", 1)
+    qos = int(_as_number(mq.get("qos", 1), 1, "mqtt.qos"))
+    if qos not in (0, 1, 2):
+        LOG.warning("mqtt.qos=%s invalid; using 1", qos)
+        qos = 1
+    mq["qos"] = qos
     mq.setdefault("retain", True)
+    mq["retain"] = bool(mq["retain"])
     mq.setdefault("status_topic", "")   # optional: JSON snapshot of conditions
 
     # Payloads must be strings. Unquoted ON/OFF/YES/NO in YAML parse as
@@ -95,20 +166,48 @@ def load_config(path):
     return cfg
 
 
+def _clamp_port(port):
+    try:
+        port = int(port)
+    except (TypeError, ValueError):
+        return 8080
+    return port if 1 <= port <= 65535 else 8080
+
+
+def load_config(path):
+    with open(path, "r") as f:
+        cfg = yaml.safe_load(f)
+    return validate_config(cfg)
+
+
 # ---------------------------------------------------------------------------
 # NWS / weather.gov client
 # ---------------------------------------------------------------------------
 def nws_get(url, user_agent, retries=3, timeout=20):
-    """GET a weather.gov endpoint with the required User-Agent + retries."""
+    """GET a weather.gov endpoint with the required User-Agent + retries.
+
+    Retries transient failures (network errors, 5xx, 429) with exponential
+    backoff. A non-retryable client error (e.g. 400/403/404) fails fast --
+    retrying a rejected User-Agent or a bad station id only wastes time and
+    pesters a free API.
+    """
     headers = {"User-Agent": user_agent, "Accept": "application/geo+json"}
     delay = 2
     for attempt in range(1, retries + 1):
         try:
             r = requests.get(url, headers=headers, timeout=timeout)
             if r.status_code == 200:
-                return r.json()
-            LOG.warning("NWS %s returned HTTP %s (attempt %d/%d)",
-                        url, r.status_code, attempt, retries)
+                try:
+                    return r.json()
+                except ValueError as e:
+                    raise RuntimeError(f"NWS returned non-JSON for {url}: {e}")
+            retryable = r.status_code == 429 or r.status_code >= 500
+            LOG.warning("NWS %s returned HTTP %s (attempt %d/%d)%s",
+                        url, r.status_code, attempt, retries,
+                        "" if retryable else " -- not retrying")
+            if not retryable:
+                raise RuntimeError(
+                    f"NWS request rejected with HTTP {r.status_code}: {url}")
         except requests.RequestException as e:
             LOG.warning("NWS request error for %s: %s (attempt %d/%d)",
                         url, e, attempt, retries)
@@ -501,9 +600,15 @@ def main():
         except Exception as e:
             LOG.error("Config reload failed, keeping previous: %s", e)
         lookback = cfg["precipitation"]["lookback_hours"]
-        interval = cfg["poll_interval_minutes"] * 60
+        interval = max(MIN_POLL_MINUTES, cfg["poll_interval_minutes"]) * 60
         rules = cfg["rules"]
         state_file = cfg["state_file"]
+        # Connection params (host/port/user/client_id) are fixed at startup, but
+        # qos/retain/status_topic are publish-time options we can honor live so
+        # web-UI edits to them take effect on the next cycle without a restart.
+        mq_live = cfg["mqtt"]
+        qos, retain = mq_live["qos"], mq_live["retain"]
+        status_topic = mq_live.get("status_topic", "")
 
         try:
             m = fetch_conditions(loc, ua, lookback)
@@ -515,21 +620,24 @@ def main():
                      m["precipitation_probability"], m["short_forecast"],
                      m["active_alerts"] or "none")
 
-            if client is not None and mq.get("status_topic"):
-                client.publish(mq["status_topic"], json.dumps(m),
-                               qos=mq["qos"], retain=mq["retain"])
+            if client is not None and status_topic:
+                client.publish(status_topic, json.dumps(m),
+                               qos=qos, retain=retain)
 
             rule_rows = []
             for rule in rules:
                 result = evaluate_rule(rule, m)
-                payload = None
                 if result is not None:
                     prev = last_state.get(rule["name"])
                     changed = (prev is None) or (prev != result) or cfg["always_publish"]
+                    # Assume committed unless a real publish fails below. A failed
+                    # publish leaves last_state unchanged so the next cycle retries
+                    # the directive instead of silently dropping a state change.
+                    commit = True
                     if changed:
                         payload = rule["on_match"] if result else rule.get("on_clear", "")
                         if payload == "" and not result:
-                            payload = None  # no clear payload configured
+                            pass  # no clear payload configured; nothing to publish
                         else:
                             topic = rule["topic"]
                             if client is None:
@@ -537,14 +645,22 @@ def main():
                                          "(rule '%s', match=%s)",
                                          payload, topic, rule["name"], result)
                             else:
-                                client.publish(topic, payload,
-                                               qos=mq["qos"], retain=mq["retain"])
-                                LOG.info("Published '%s' -> %s (rule '%s', match=%s)",
-                                         payload, topic, rule["name"], result)
-                            if prev != result:
+                                info = client.publish(topic, payload,
+                                                      qos=qos, retain=retain)
+                                if info.rc != mqtt.MQTT_ERR_SUCCESS:
+                                    commit = False
+                                    LOG.warning("Publish to %s returned rc=%s "
+                                                "(broker offline? will retry next "
+                                                "cycle)", topic, info.rc)
+                                else:
+                                    LOG.info("Published '%s' -> %s (rule '%s', "
+                                             "match=%s)", payload, topic,
+                                             rule["name"], result)
+                            if commit and prev != result:
                                 last_change[rule["name"]] = datetime.now(
                                     timezone.utc).isoformat(timespec="seconds")
-                    last_state[rule["name"]] = result
+                    if commit:
+                        last_state[rule["name"]] = result
 
                 rule_rows.append({
                     "name": rule["name"],

@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark light">
+<title>Rules · Precipitation → MQTT</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%8C%A7%3C/text%3E%3C/svg%3E">
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+<div class="banner">📦 <b>Static demo</b> — the editor validates YAML in your browser but does not save anything.</div>
+<header>
+  <h1>🌧 Precipitation → MQTT</h1>
+  <nav>
+    <a href="index.html">Dashboard</a>
+    <a href="settings.html">Settings</a>
+    <a href="rules.html" class="active">Rules</a>
+  </nav>
+  <span class="spacer"></span>
+  <span class="conn"><span class="dot up"></span>MQTT connected</span>
+</header>
+
+<main>
+<form id="rules-form">
+  <div class="card">
+    <h3>Rules</h3>
+    <p class="muted">YAML for the <code>rules:</code> list. The first rule controls irrigation. A rule's
+      <code>when</code> can be a single condition or an <code>any</code> (OR) / <code>all</code> (AND) group.
+      The whole list is validated before saving; on error nothing is written and your text is kept.</p>
+    <label>rules:</label>
+    <textarea name="rules_yaml" id="rules_yaml" spellcheck="false">- name: irrigation_rain_inhibit
+  description: "Hold irrigation when raining or >= 0.25 in / 24h"
+  when:
+    any:
+      - metric: is_raining
+        operator: "=="
+        value: true
+      - metric: precip_accum_in
+        operator: ">="
+        value: 0.25
+  topic: "irrigation/rain_inhibit"
+  on_match: "INHIBIT"
+  on_clear: "ALLOW"
+
+- name: freeze_protection
+  description: "Energize heat trace below freezing"
+  when:
+    metric: temperature
+    operator: "<="
+    value: 35
+  topic: "facility/weather/freeze_protection"
+  on_match: "ON"
+  on_clear: "OFF"
+
+- name: any_nws_alert
+  description: "Flag whenever any NWS alert is active"
+  when:
+    metric: active_alert
+    operator: "any"
+  topic: "facility/weather/nws_alert"
+  on_match: "1"
+  on_clear: "0"</textarea>
+    <div class="field-err" id="rules-err"></div>
+    <div class="btnrow">
+      <button type="submit">Save rules</button>
+      <button type="button" class="secondary" id="add-example">Append example rule</button>
+      <button type="button" class="secondary" id="check">Validate</button>
+    </div>
+
+    <details style="margin-top:18px" open>
+      <summary class="muted" style="cursor:pointer">Available metrics &amp; operators</summary>
+      <table style="margin-top:10px">
+        <thead><tr><th>Metric</th><th>Meaning</th><th>Operators</th></tr></thead>
+        <tbody>
+          <tr><td><code>is_raining</code></td><td>precipitating right now</td><td><code>== !=</code></td></tr>
+          <tr><td><code>precip_accum_in</code></td><td>measured rain over lookback (in)</td><td><code>&lt; &lt;= &gt; &gt;= == !=</code></td></tr>
+          <tr><td><code>precipitation_probability</code></td><td>forecast chance (%)</td><td><code>&lt; &lt;= &gt; &gt;= == !=</code></td></tr>
+          <tr><td><code>temperature</code></td><td>air temp (°F)</td><td><code>&lt; &lt;= &gt; &gt;= == !=</code></td></tr>
+          <tr><td><code>wind_speed_mph</code></td><td>wind speed (mph)</td><td><code>&lt; &lt;= &gt; &gt;= == !=</code></td></tr>
+          <tr><td><code>humidity</code></td><td>relative humidity (%)</td><td><code>&lt; &lt;= &gt; &gt;= == !=</code></td></tr>
+          <tr><td><code>short_forecast</code></td><td>text e.g. "Light Rain"</td><td><code>contains equals</code></td></tr>
+          <tr><td><code>active_alert</code></td><td>NWS watches/warnings</td><td><code>any contains equals</code></td></tr>
+        </tbody>
+      </table>
+    </details>
+  </div>
+</form>
+</main>
+
+<footer>Precipitation → MQTT controller · demo build</footer>
+<div id="toast"></div>
+<script src="assets/app.js"></script>
+</body>
+</html>

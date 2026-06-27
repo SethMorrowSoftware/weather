@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark light">
+<title>Settings · Precipitation → MQTT</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%8C%A7%3C/text%3E%3C/svg%3E">
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+<div class="banner">📦 <b>Static demo</b> — the form validates in your browser but does not save anything.</div>
+<header>
+  <h1>🌧 Precipitation → MQTT</h1>
+  <nav>
+    <a href="index.html">Dashboard</a>
+    <a href="settings.html" class="active">Settings</a>
+    <a href="rules.html">Rules</a>
+  </nav>
+  <span class="spacer"></span>
+  <span class="conn"><span class="dot up"></span>MQTT connected</span>
+</header>
+
+<main>
+<form id="settings-form" autocomplete="off" novalidate>
+  <div class="card">
+    <h3>Location &amp; polling</h3>
+    <div class="row">
+      <div><label>Latitude <span class="hint">(−90…90)</span></label>
+        <input name="latitude" value="41.2459" data-type="num" data-min="-90" data-max="90">
+        <div class="field-err"></div></div>
+      <div><label>Longitude <span class="hint">(−180…180)</span></label>
+        <input name="longitude" value="-74.2735" data-type="num" data-min="-180" data-max="180">
+        <div class="field-err"></div></div>
+    </div>
+    <div class="row">
+      <div><label>Station ID <span class="hint">(optional, blank = nearest)</span></label>
+        <input name="station_id" value="" placeholder="e.g. KMGJ"><div class="field-err"></div></div>
+      <div><label>Poll interval <span class="hint">(minutes, 1…1440)</span></label>
+        <input name="poll_interval_minutes" value="15" data-type="int" data-min="1" data-max="1440">
+        <div class="field-err"></div></div>
+    </div>
+    <label>User-Agent <span class="hint">(NWS requires a real contact email/phone)</span></label>
+    <input name="user_agent" value="facility-irrigation-controller (ops@example.com)" data-required="1">
+    <div class="field-err"></div>
+    <div class="row">
+      <div><label>Rain lookback window <span class="hint">(hours, 1…720)</span></label>
+        <input name="lookback_hours" value="24" data-type="int" data-min="1" data-max="720">
+        <div class="field-err"></div></div>
+      <div><label>Always publish <span class="hint">(re-send every cycle as a heartbeat)</span></label>
+        <select name="always_publish"><option value="false">false</option><option value="true">true</option></select>
+        <div class="field-err"></div></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h3>MQTT broker</h3>
+    <div class="row">
+      <div><label>Host</label><input name="mqtt_host" value="localhost"><div class="field-err"></div></div>
+      <div><label>Port <span class="hint">(1…65535)</span></label>
+        <input name="mqtt_port" value="1883" data-type="int" data-min="1" data-max="65535">
+        <div class="field-err"></div></div>
+    </div>
+    <div class="row">
+      <div><label>Username <span class="hint">(blank = anonymous)</span></label>
+        <input name="mqtt_username" value="" autocomplete="off"><div class="field-err"></div></div>
+      <div><label>Password</label>
+        <input name="mqtt_password" type="password" value="" autocomplete="new-password"><div class="field-err"></div></div>
+    </div>
+    <div class="row">
+      <div><label>Client ID</label><input name="mqtt_client_id" value="weather-mqtt-controller"><div class="field-err"></div></div>
+      <div><label>QoS <span class="hint">(0, 1, 2)</span></label>
+        <select name="mqtt_qos"><option>0</option><option selected>1</option><option>2</option></select>
+        <div class="field-err"></div></div>
+    </div>
+    <div class="row">
+      <div><label>Retain <span class="hint">(broker keeps last value for new subscribers)</span></label>
+        <select name="mqtt_retain"><option value="true">true</option><option value="false">false</option></select>
+        <div class="field-err"></div></div>
+      <div><label>Status topic <span class="hint">(JSON snapshot, blank = off)</span></label>
+        <input name="status_topic" value="irrigation/weather/status"><div class="field-err"></div></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h3>Web interface</h3>
+    <div class="row">
+      <div><label>Bind host <span class="hint">(0.0.0.0 = all, 127.0.0.1 = local only)</span></label>
+        <input name="web_host" value="0.0.0.0"><div class="field-err"></div></div>
+      <div><label>Port <span class="hint">(1…65535)</span></label>
+        <input name="web_port" value="8080" data-type="int" data-min="1" data-max="65535">
+        <div class="field-err"></div></div>
+    </div>
+    <div class="row">
+      <div><label>Login username <span class="hint">(blank = no auth)</span></label>
+        <input name="web_username" value="" autocomplete="off"><div class="field-err"></div></div>
+      <div><label>Login password</label>
+        <input name="web_password" type="password" value="" autocomplete="new-password"><div class="field-err"></div></div>
+    </div>
+    <p class="muted">⚠ Changing <b>location</b>, the <b>MQTT connection</b>, or any <b>web interface</b>
+      setting restarts the corresponding service in the live app. Thresholds, lookback, poll interval,
+      QoS, retain, status topic and rules apply on the next poll automatically.</p>
+    <button type="submit">Save settings</button>
+  </div>
+</form>
+</main>
+
+<footer>Precipitation → MQTT controller · demo build</footer>
+<div id="toast"></div>
+<script src="assets/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,126 @@
+/* ===========================================================================
+   Precipitation -> MQTT  ·  demo UI stylesheet
+   Self-contained (no external fonts/CDNs) so it runs on any static host.
+   Mirrors the live webui.py theme, with a few demo-only extras (banner, toast).
+   =========================================================================== */
+:root{
+  --bg:#0b1220;--panel:#111c30;--panel2:#0d1626;--line:#26344b;--line2:#1b2740;
+  --ink:#e6edf6;--muted:#8aa0bd;--muted2:#5f7494;--accent:#3b82f6;--accent2:#2563eb;
+  --good:#22c55e;--bad:#f87171;--warn:#fbbf24;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{
+  font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;margin:0;
+  background:radial-gradient(1200px 600px at 80% -10%,#15233c 0,var(--bg) 55%);
+  color:var(--ink);min-height:100vh;-webkit-font-smoothing:antialiased;
+}
+a{color:#8bbcff}
+
+/* demo banner ------------------------------------------------------------- */
+.banner{
+  background:linear-gradient(90deg,#1d2c49,#16233b);border-bottom:1px solid var(--line2);
+  color:var(--muted);font-size:12.5px;text-align:center;padding:7px 14px;
+}
+.banner b{color:#cfe0fb}
+
+/* header / nav ------------------------------------------------------------ */
+header{
+  position:sticky;top:0;z-index:10;background:rgba(13,22,38,.88);
+  backdrop-filter:blur(8px);border-bottom:1px solid var(--line2);
+  padding:12px 22px;display:flex;gap:22px;align-items:center;
+}
+header h1{font-size:16px;margin:0;color:#fff;display:flex;gap:9px;align-items:center;font-weight:700}
+nav{display:flex;gap:6px;flex-wrap:wrap}
+nav a{color:var(--muted);text-decoration:none;font-size:14px;padding:6px 12px;border-radius:8px}
+nav a:hover{color:#fff;background:#16233b}
+nav a.active{color:#fff;background:#1d2c49;font-weight:600}
+.spacer{flex:1}
+.conn{font-size:12.5px;color:var(--muted);display:flex;align-items:center;white-space:nowrap}
+.dot{width:9px;height:9px;border-radius:50%;display:inline-block;margin-right:7px;
+  box-shadow:0 0 0 3px rgba(255,255,255,.04)}
+.dot.up{background:var(--good)}.dot.down{background:var(--bad)}.dot.idle{background:var(--muted2)}
+
+/* layout ------------------------------------------------------------------ */
+main{max-width:960px;margin:26px auto;padding:0 18px 70px}
+.card{
+  background:linear-gradient(180deg,var(--panel),var(--panel2));
+  border:1px solid var(--line2);border-radius:14px;padding:20px 22px;margin-bottom:18px;
+  box-shadow:0 1px 0 rgba(255,255,255,.03) inset,0 10px 30px -20px rgba(0,0,0,.8);
+}
+.card h3{margin:0 0 4px;font-size:15px;letter-spacing:.2px}
+.eyebrow{text-transform:uppercase;letter-spacing:.12em;font-size:11px;color:var(--muted2);font-weight:700}
+.toprow{display:flex;justify-content:space-between;align-items:baseline;gap:12px;flex-wrap:wrap}
+hr{border:0;border-top:1px solid var(--line2);margin:18px 0}
+
+/* directive --------------------------------------------------------------- */
+.big{font-size:34px;font-weight:800;margin:8px 0;letter-spacing:-.5px}
+.inhibit{color:var(--bad)}.allow{color:var(--good)}.unknown{color:var(--warn)}
+
+/* tables ------------------------------------------------------------------ */
+table{width:100%;border-collapse:collapse;font-size:14px}
+th,td{text-align:left;padding:10px 10px;border-bottom:1px solid var(--line)}
+tbody tr:last-child td{border-bottom:0}
+th{color:var(--muted);font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:.06em}
+code{background:#0a1322;border:1px solid var(--line);border-radius:5px;padding:1px 6px;font-size:12.5px}
+
+/* pills / badges ---------------------------------------------------------- */
+.pill{padding:3px 10px;border-radius:999px;font-size:12px;font-weight:700;white-space:nowrap}
+.on{background:#3a1115;color:#fecaca;box-shadow:0 0 0 1px #7f1d1d inset}
+.off{background:#0f2e1c;color:#bbf7d0;box-shadow:0 0 0 1px #14532d inset}
+.na{background:#1c2740;color:#cdd9ec;box-shadow:0 0 0 1px #2c3c5a inset}
+
+/* forms ------------------------------------------------------------------- */
+label{display:block;font-size:13px;color:var(--muted);margin:14px 0 5px;font-weight:600}
+.hint{font-weight:400;color:var(--muted2)}
+input,textarea,select{
+  width:100%;background:#0a1322;color:var(--ink);
+  border:1px solid var(--line);border-radius:8px;padding:9px 11px;font-size:14px;font-family:inherit;
+}
+input:focus,textarea:focus,select:focus{outline:none;border-color:var(--accent);
+  box-shadow:0 0 0 3px rgba(59,130,246,.18)}
+input.invalid{border-color:var(--bad);box-shadow:0 0 0 3px rgba(248,113,113,.16)}
+.field-err{color:#fda4a4;font-size:12px;margin-top:5px;min-height:14px}
+textarea{min-height:340px;font-family:ui-monospace,Menlo,Consolas,monospace;line-height:1.5}
+.row{display:flex;gap:16px;flex-wrap:wrap}.row>div{flex:1;min-width:160px}
+
+/* buttons ----------------------------------------------------------------- */
+button{background:var(--accent2);color:#fff;border:0;border-radius:9px;padding:11px 20px;
+  font-size:14px;font-weight:700;cursor:pointer;margin-top:18px}
+button:hover{background:var(--accent)}
+button.secondary{background:#1d2c49}
+button.secondary:hover{background:#26395e}
+.btnrow{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+
+/* messages / metrics ------------------------------------------------------ */
+.msg{padding:11px 15px;border-radius:9px;margin-bottom:16px;font-size:14px;font-weight:600}
+.ok{background:#0f2e1c;color:#bbf7d0;box-shadow:0 0 0 1px #14532d inset}
+.err{background:#3a1115;color:#fecaca;box-shadow:0 0 0 1px #7f1d1d inset}
+.muted{color:var(--muted2);font-size:12.5px}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(148px,1fr));gap:12px}
+.metric{background:#0a1322;border:1px solid var(--line);border-radius:11px;padding:13px 14px}
+.metric .v{font-size:22px;font-weight:700}
+.metric .k{color:var(--muted);font-size:12px;margin-top:3px}
+
+/* demo controls ----------------------------------------------------------- */
+.controls{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+.chip{background:#0a1322;border:1px solid var(--line);color:var(--ink);border-radius:999px;
+  padding:7px 14px;font-size:13px;font-weight:600;cursor:pointer;margin:0}
+.chip:hover{border-color:var(--accent)}
+.chip.active{background:#1d2c49;border-color:var(--accent)}
+
+/* toast ------------------------------------------------------------------- */
+#toast{position:fixed;left:50%;bottom:26px;transform:translateX(-50%) translateY(40px);
+  background:#0f2e1c;color:#bbf7d0;box-shadow:0 0 0 1px #14532d inset,0 12px 30px -12px #000;
+  padding:12px 18px;border-radius:10px;font-size:14px;font-weight:600;opacity:0;
+  transition:opacity .25s,transform .25s;pointer-events:none;z-index:50}
+#toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+#toast.err{background:#3a1115;color:#fecaca;box-shadow:0 0 0 1px #7f1d1d inset,0 12px 30px -12px #000}
+
+footer{max-width:960px;margin:0 auto;padding:0 18px 40px;color:var(--muted2);font-size:12.5px;text-align:center}
+
+@media (max-width:560px){
+  header{gap:12px;padding:10px 14px}
+  .conn{display:none}
+  main{margin-top:16px}
+}

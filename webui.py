@@ -13,10 +13,11 @@ Run:  python webui.py --config config.yaml
 
 import argparse
 import functools
+import hmac
 import json
 from pathlib import Path
 
-from flask import Flask, request, redirect, url_for, render_template_string, Response
+from flask import Flask, request, url_for, render_template_string, Response, jsonify
 
 import weather_mqtt as core
 
@@ -81,10 +82,13 @@ def dump_raw(data):
 
 
 def save_config(data):
-    """Validate then atomically write config.yaml, keeping a .bak."""
+    """Validate then atomically write config.yaml, keeping a timestamp-free .bak.
+
+    Validation round-trips the serialized text through the monitor's own
+    loader/validator, so the UI can never persist a config the monitor would
+    choke on. The previous file is copied to config.yaml.bak first.
+    """
     text = dump_raw(data)
-    # Validate by round-tripping through the monitor's own loader.
-    import tempfile
     import yaml as _y
     parsed = _y.safe_load(text)
     core_check(parsed)  # raises ValueError on a bad config
@@ -97,19 +101,15 @@ def save_config(data):
 
 
 def core_check(parsed):
-    """Reuse the monitor's validation rules without touching the filesystem."""
-    for key in ("location", "user_agent", "mqtt", "rules"):
-        if key not in parsed:
-            raise ValueError(f"config is missing required section: '{key}'")
-    loc = parsed["location"]
-    if "latitude" not in loc or "longitude" not in loc:
-        raise ValueError("location needs 'latitude' and 'longitude'")
-    if not isinstance(parsed["rules"], list) or not parsed["rules"]:
-        raise ValueError("'rules' must be a non-empty list")
-    for r in parsed["rules"]:
-        for req in ("name", "when", "topic", "on_match"):
-            if req not in r:
-                raise ValueError(f"rule {r.get('name', '?')} missing '{req}'")
+    """Reuse the monitor's full structural + range validation.
+
+    validate_config mutates/clamps a *copy*, so the user's saved values are
+    preserved verbatim; this call only confirms the config is loadable. Range
+    problems the user should see (bad lat/lon, etc.) are reported by the form
+    handlers before we ever get here, with friendlier messages.
+    """
+    import copy
+    core.validate_config(copy.deepcopy(parsed))
 
 
 def load_state(cfg):
@@ -123,18 +123,31 @@ def load_state(cfg):
 # ---------------------------------------------------------------------------
 # Optional basic auth
 # ---------------------------------------------------------------------------
+def _auth_ok():
+    """True when the request satisfies basic auth (or auth is disabled)."""
+    try:
+        web = (load_raw().get("web", {}) or {})
+    except Exception:
+        web = {}
+    user = str(web.get("username", "") or "")
+    pw = str(web.get("password", "") or "")
+    if not user:
+        return True  # no username configured -> auth disabled (trusted LAN)
+    auth = request.authorization
+    if not auth or auth.username is None or auth.password is None:
+        return False
+    # constant-time comparison so the endpoint doesn't leak length/contents
+    return (hmac.compare_digest(auth.username, user)
+            and hmac.compare_digest(auth.password, pw))
+
+
 def require_auth(fn):
     @functools.wraps(fn)
     def wrapper(*a, **kw):
-        cfg = load_raw()
-        web = cfg.get("web", {}) or {}
-        user, pw = web.get("username", ""), web.get("password", "")
-        if user:
-            auth = request.authorization
-            if not auth or auth.username != user or auth.password != pw:
-                return Response(
-                    "Authentication required", 401,
-                    {"WWW-Authenticate": 'Basic realm="weather-mqtt"'})
+        if not _auth_ok():
+            return Response(
+                "Authentication required", 401,
+                {"WWW-Authenticate": 'Basic realm="weather-mqtt"'})
         return fn(*a, **kw)
     return wrapper
 
@@ -142,39 +155,77 @@ def require_auth(fn):
 # ---------------------------------------------------------------------------
 # Templates
 # ---------------------------------------------------------------------------
+FAVICON = ("data:image/svg+xml,"
+           "%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E"
+           "%3Ctext y='.9em' font-size='90'%3E%F0%9F%8C%A7%3C/text%3E%3C/svg%3E")
+
 BASE = """
-<!doctype html><html><head><meta charset="utf-8">
+<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Precipitation → MQTT</title>
+<meta name="color-scheme" content="dark light">
+<title>{{ title or 'Precipitation → MQTT' }}</title>
+<link rel="icon" href="{{ favicon }}">
 <style>
- body{font-family:system-ui,Segoe UI,Arial,sans-serif;margin:0;background:#0f172a;color:#e2e8f0}
- header{background:#1e293b;padding:14px 22px;display:flex;gap:20px;align-items:center}
- header h1{font-size:17px;margin:0;color:#fff}
- nav a{color:#93c5fd;text-decoration:none;margin-right:16px;font-size:14px}
- nav a.active{color:#fff;font-weight:600}
- main{max-width:920px;margin:24px auto;padding:0 18px}
- .card{background:#1e293b;border-radius:10px;padding:18px 20px;margin-bottom:18px}
- .big{font-size:30px;font-weight:700;margin:6px 0}
- .inhibit{color:#f87171}.allow{color:#4ade80}.unknown{color:#fbbf24}
+ :root{
+   --bg:#0b1220;--panel:#111c30;--panel2:#0d1626;--line:#26344b;--line2:#1b2740;
+   --ink:#e6edf6;--muted:#8aa0bd;--muted2:#5f7494;--accent:#3b82f6;--accent2:#2563eb;
+   --good:#22c55e;--bad:#f87171;--warn:#fbbf24;
+ }
+ *{box-sizing:border-box}
+ body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;margin:0;
+   background:radial-gradient(1200px 600px at 80% -10%,#15233c 0,var(--bg) 55%);
+   color:var(--ink);min-height:100vh;-webkit-font-smoothing:antialiased}
+ a{color:#8bbcff}
+ header{position:sticky;top:0;z-index:10;background:rgba(13,22,38,.86);
+   backdrop-filter:blur(8px);border-bottom:1px solid var(--line2);
+   padding:12px 22px;display:flex;gap:22px;align-items:center}
+ header h1{font-size:16px;margin:0;color:#fff;display:flex;gap:9px;align-items:center;font-weight:700}
+ nav{display:flex;gap:6px;flex-wrap:wrap}
+ nav a{color:var(--muted);text-decoration:none;font-size:14px;padding:6px 12px;border-radius:8px}
+ nav a:hover{color:#fff;background:#16233b}
+ nav a.active{color:#fff;background:#1d2c49;font-weight:600}
+ .spacer{flex:1}
+ .dot{width:9px;height:9px;border-radius:50%;display:inline-block;margin-right:7px;
+   box-shadow:0 0 0 3px rgba(255,255,255,.04)}
+ .dot.up{background:var(--good)}.dot.down{background:var(--bad)}.dot.idle{background:var(--muted2)}
+ .conn{font-size:12.5px;color:var(--muted);display:flex;align-items:center}
+ main{max-width:960px;margin:26px auto;padding:0 18px 60px}
+ .card{background:linear-gradient(180deg,var(--panel),var(--panel2));
+   border:1px solid var(--line2);border-radius:14px;padding:20px 22px;margin-bottom:18px;
+   box-shadow:0 1px 0 rgba(255,255,255,.03) inset,0 10px 30px -20px rgba(0,0,0,.8)}
+ .card h3{margin:0 0 4px;font-size:15px;letter-spacing:.2px}
+ .eyebrow{text-transform:uppercase;letter-spacing:.12em;font-size:11px;color:var(--muted2);font-weight:700}
+ .big{font-size:34px;font-weight:800;margin:8px 0;letter-spacing:-.5px}
+ .inhibit{color:var(--bad)}.allow{color:var(--good)}.unknown{color:var(--warn)}
  table{width:100%;border-collapse:collapse;font-size:14px}
- th,td{text-align:left;padding:8px 10px;border-bottom:1px solid #334155}
- th{color:#94a3b8;font-weight:600}
- .pill{padding:2px 9px;border-radius:999px;font-size:12px;font-weight:600}
- .on{background:#7f1d1d;color:#fecaca}.off{background:#14532d;color:#bbf7d0}
- .na{background:#374151;color:#d1d5db}
- label{display:block;font-size:13px;color:#94a3b8;margin:12px 0 4px}
- input,textarea,select{width:100%;box-sizing:border-box;background:#0f172a;color:#e2e8f0;
-   border:1px solid #334155;border-radius:6px;padding:8px;font-size:14px;font-family:inherit}
- textarea{min-height:320px;font-family:ui-monospace,Menlo,Consolas,monospace}
- .row{display:flex;gap:14px}.row>div{flex:1}
- button{background:#2563eb;color:#fff;border:0;border-radius:6px;padding:10px 18px;
-   font-size:14px;font-weight:600;cursor:pointer;margin-top:16px}
- .msg{padding:10px 14px;border-radius:6px;margin-bottom:14px}
- .ok{background:#14532d;color:#bbf7d0}.err{background:#7f1d1d;color:#fecaca}
- .muted{color:#64748b;font-size:12px}
- .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px}
- .metric{background:#0f172a;border-radius:8px;padding:12px}
- .metric .v{font-size:20px;font-weight:600}.metric .k{color:#94a3b8;font-size:12px}
+ th,td{text-align:left;padding:10px 10px;border-bottom:1px solid var(--line)}
+ tr:last-child td{border-bottom:0}
+ th{color:var(--muted);font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:.06em}
+ code{background:#0a1322;border:1px solid var(--line);border-radius:5px;padding:1px 6px;font-size:12.5px}
+ .pill{padding:3px 10px;border-radius:999px;font-size:12px;font-weight:700;white-space:nowrap}
+ .on{background:#3a1115;color:#fecaca;box-shadow:0 0 0 1px #7f1d1d inset}
+ .off{background:#0f2e1c;color:#bbf7d0;box-shadow:0 0 0 1px #14532d inset}
+ .na{background:#1c2740;color:#cdd9ec;box-shadow:0 0 0 1px #2c3c5a inset}
+ label{display:block;font-size:13px;color:var(--muted);margin:14px 0 5px;font-weight:600}
+ .hint{font-weight:400;color:var(--muted2)}
+ input,textarea,select{width:100%;background:#0a1322;color:var(--ink);
+   border:1px solid var(--line);border-radius:8px;padding:9px 11px;font-size:14px;font-family:inherit}
+ input:focus,textarea:focus,select:focus{outline:none;border-color:var(--accent);
+   box-shadow:0 0 0 3px rgba(59,130,246,.18)}
+ textarea{min-height:340px;font-family:ui-monospace,Menlo,Consolas,monospace;line-height:1.5}
+ .row{display:flex;gap:16px;flex-wrap:wrap}.row>div{flex:1;min-width:160px}
+ button{background:var(--accent2);color:#fff;border:0;border-radius:9px;padding:11px 20px;
+   font-size:14px;font-weight:700;cursor:pointer;margin-top:18px}
+ button:hover{background:var(--accent)}
+ .msg{padding:11px 15px;border-radius:9px;margin-bottom:16px;font-size:14px;font-weight:600}
+ .ok{background:#0f2e1c;color:#bbf7d0;box-shadow:0 0 0 1px #14532d inset}
+ .err{background:#3a1115;color:#fecaca;box-shadow:0 0 0 1px #7f1d1d inset}
+ .muted{color:var(--muted2);font-size:12.5px}
+ .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(148px,1fr));gap:12px}
+ .metric{background:#0a1322;border:1px solid var(--line);border-radius:11px;padding:13px 14px}
+ .metric .v{font-size:22px;font-weight:700}.metric .k{color:var(--muted);font-size:12px;margin-top:3px}
+ .toprow{display:flex;justify-content:space-between;align-items:baseline;gap:12px;flex-wrap:wrap}
+ hr{border:0;border-top:1px solid var(--line2);margin:18px 0}
 </style></head><body>
 <header>
  <h1>🌧 Precipitation → MQTT</h1>
@@ -183,6 +234,8 @@ BASE = """
   <a href="{{ url_for('settings') }}" class="{{ 'active' if page=='settings' }}">Settings</a>
   <a href="{{ url_for('rules') }}" class="{{ 'active' if page=='rules' }}">Rules</a>
  </nav>
+ <span class="spacer"></span>
+ <span class="conn" id="connstate"><span class="dot idle"></span>weather-mqtt</span>
 </header>
 <main>
  {% if msg %}<div class="msg {{ msgclass }}">{{ msg }}</div>{% endif %}
@@ -192,6 +245,7 @@ BASE = """
 
 
 def page(body, **kw):
+    kw.setdefault("favicon", FAVICON)
     return render_template_string(BASE, body=body, **kw)
 
 
@@ -199,139 +253,265 @@ def page(body, **kw):
 # Dashboard
 # ---------------------------------------------------------------------------
 DASH = """
-{% if not state %}
-  <div class="card"><p>No status yet. The monitor writes a snapshot each poll
-  cycle to <code>{{ state_file }}</code>. Start <code>weather_mqtt.py</code> and
-  refresh.</p></div>
-{% else %}
-  {% set irr = irr_rule %}
-  <div class="card">
-    <div class="muted">Irrigation directive</div>
-    {% if irr and irr.active is not none %}
-      <div class="big {{ 'inhibit' if irr.active else 'allow' }}">
-        {{ irr.current_payload }} — {{ 'do NOT water' if irr.active else 'watering allowed' }}
-      </div>
-      <div class="muted">topic <code>{{ irr.topic }}</code>
-        {% if irr.last_change %}· changed {{ irr.last_change }}{% endif %}</div>
-    {% else %}
-      <div class="big unknown">UNKNOWN</div>
-      <div class="muted">No irrigation rule data yet (waiting on weather data).</div>
-    {% endif %}
+<div id="dash" data-state-file="{{ state_file }}">
+  <div class="card" id="directive-card">
+    <div class="eyebrow">Irrigation directive</div>
+    <div class="big unknown" id="directive">…</div>
+    <div class="muted" id="directive-sub">Loading current conditions…</div>
   </div>
 
   <div class="card">
-    <div class="muted">Conditions · updated {{ state.updated }} ·
-      MQTT {{ 'connected' if state.mqtt_connected else 'NOT connected' }}</div>
-    <div class="grid" style="margin-top:10px">
-      <div class="metric"><div class="v">{{ fmt(m.is_raining) }}</div><div class="k">raining now</div></div>
-      <div class="metric"><div class="v">{{ fmt(m.precip_accum_in) }} in</div><div class="k">rain last {{ state.lookback_hours }}h</div></div>
-      <div class="metric"><div class="v">{{ fmt(m.precipitation_probability) }}%</div><div class="k">forecast chance</div></div>
-      <div class="metric"><div class="v">{{ fmt(m.temperature) }}°F</div><div class="k">temperature</div></div>
-      <div class="metric"><div class="v">{{ fmt(m.humidity) }}%</div><div class="k">humidity</div></div>
-      <div class="metric"><div class="v">{{ fmt(m.wind_speed_mph) }}</div><div class="k">wind mph</div></div>
+    <div class="toprow">
+      <div class="eyebrow">Current conditions</div>
+      <div class="muted" id="updated">—</div>
     </div>
-    <p class="muted" style="margin-top:12px">{{ m.short_forecast }} ·
-      alerts: {{ m.active_alerts|join(', ') if m.active_alerts else 'none' }}</p>
+    <div class="grid" style="margin-top:12px">
+      <div class="metric"><div class="v" id="m_rain">—</div><div class="k">raining now</div></div>
+      <div class="metric"><div class="v" id="m_accum">—</div><div class="k" id="m_accum_k">rain last window</div></div>
+      <div class="metric"><div class="v" id="m_prob">—</div><div class="k">forecast chance</div></div>
+      <div class="metric"><div class="v" id="m_temp">—</div><div class="k">temperature</div></div>
+      <div class="metric"><div class="v" id="m_hum">—</div><div class="k">humidity</div></div>
+      <div class="metric"><div class="v" id="m_wind">—</div><div class="k">wind mph</div></div>
+    </div>
+    <p class="muted" style="margin-top:14px" id="forecast">—</p>
   </div>
 
   <div class="card">
-    <table><tr><th>Rule</th><th>Topic</th><th>State</th><th>Payload</th><th>Last change</th></tr>
-    {% for r in state.rules %}
-      <tr>
-        <td>{{ r.name }}<div class="muted">{{ r.description }}</div></td>
-        <td><code>{{ r.topic }}</code></td>
-        <td>{% if r.active is none %}<span class="pill na">n/a</span>
-            {% elif r.active %}<span class="pill on">active</span>
-            {% else %}<span class="pill off">clear</span>{% endif %}</td>
-        <td>{{ r.current_payload if r.current_payload is not none else '—' }}</td>
-        <td class="muted">{{ r.last_change or '—' }}</td>
-      </tr>
-    {% endfor %}
+    <div class="eyebrow" style="margin-bottom:10px">Rules</div>
+    <table>
+      <thead><tr><th>Rule</th><th>Topic</th><th>State</th><th>Payload</th><th>Last change</th></tr></thead>
+      <tbody id="rulebody">
+        <tr><td colspan="5" class="muted">Loading…</td></tr>
+      </tbody>
     </table>
   </div>
-{% endif %}
-<p class="muted">Auto-refreshes every 30s.</p>
-<script>setTimeout(()=>location.reload(),30000)</script>
+  <p class="muted">Live — updates every {{ refresh }}s. <span id="staleness"></span></p>
+</div>
+
+<script>
+const REFRESH = {{ refresh }} * 1000;
+const fmt = v => v === null || v === undefined ? "—" : (v === true ? "yes" : (v === false ? "no" : v));
+function setText(id, t){ const e=document.getElementById(id); if(e) e.textContent=t; }
+
+function render(s){
+  const conn = document.getElementById("connstate");
+  if(!s){
+    document.getElementById("directive").className = "big unknown";
+    setText("directive","NO DATA");
+    setText("directive-sub","No snapshot yet. Start the monitor (weather_mqtt.py); it writes one each poll cycle.");
+    conn.innerHTML = '<span class="dot idle"></span>no monitor data';
+    return;
+  }
+  // connection badge
+  const up = !!s.mqtt_connected;
+  conn.innerHTML = '<span class="dot '+(up?'up':'down')+'"></span>MQTT '+(up?'connected':'offline');
+
+  // directive (first irrigation/rain_inhibit rule)
+  const rules = s.rules || [];
+  const irr = rules.find(r => /irrigation|rain_inhibit/.test(r.name));
+  const d = document.getElementById("directive");
+  if(irr && irr.active !== null && irr.active !== undefined){
+    d.className = "big " + (irr.active ? "inhibit" : "allow");
+    setText("directive", (irr.current_payload ?? "?") + (irr.active ? " — do NOT water" : " — watering allowed"));
+    setText("directive-sub", "topic " + irr.topic + (irr.last_change ? " · changed " + irr.last_change : ""));
+  } else {
+    d.className = "big unknown";
+    setText("directive","UNKNOWN");
+    setText("directive-sub","No irrigation rule data yet (waiting on weather data).");
+  }
+
+  const m = s.metrics || {};
+  setText("updated", "updated " + (s.updated || "—"));
+  setText("m_rain", fmt(m.is_raining));
+  setText("m_accum", fmt(m.precip_accum_in) + " in");
+  setText("m_accum_k", "rain last " + (s.lookback_hours ?? "?") + "h");
+  setText("m_prob", fmt(m.precipitation_probability) + "%");
+  setText("m_temp", fmt(m.temperature) + "°F");
+  setText("m_hum", fmt(m.humidity) + "%");
+  setText("m_wind", fmt(m.wind_speed_mph));
+  const alerts = (m.active_alerts && m.active_alerts.length) ? m.active_alerts.join(", ") : "none";
+  setText("forecast", (m.short_forecast || "—") + " · alerts: " + alerts);
+
+  const tb = document.getElementById("rulebody");
+  tb.innerHTML = "";
+  for(const r of rules){
+    const tr = document.createElement("tr");
+    let pill;
+    if(r.active === null || r.active === undefined) pill = '<span class="pill na">n/a</span>';
+    else if(r.active) pill = '<span class="pill on">active</span>';
+    else pill = '<span class="pill off">clear</span>';
+    tr.innerHTML = '<td>'+esc(r.name)+'<div class="muted">'+esc(r.description||"")+'</div></td>'+
+      '<td><code>'+esc(r.topic)+'</code></td><td>'+pill+'</td>'+
+      '<td>'+(r.current_payload!=null?esc(r.current_payload):"—")+'</td>'+
+      '<td class="muted">'+esc(r.last_change||"—")+'</td>';
+    tb.appendChild(tr);
+  }
+  if(!rules.length) tb.innerHTML = '<tr><td colspan="5" class="muted">No rules.</td></tr>';
+}
+function esc(s){ const d=document.createElement("div"); d.textContent=String(s); return d.innerHTML; }
+
+async function tick(){
+  try{
+    const r = await fetch("api/state", {cache:"no-store"});
+    render(r.ok ? await r.json() : null);
+    setText("staleness","");
+  }catch(e){
+    setText("staleness","(connection lost — retrying)");
+  }
+}
+tick(); setInterval(tick, REFRESH);
+</script>
 """
 
-
-def _fmt(v):
-    return "—" if v is None else ("yes" if v is True else ("no" if v is False else v))
+DASH_REFRESH_SECONDS = 20
 
 
 @app.route("/")
 @require_auth
 def dashboard():
     cfg = load_raw()
-    state = load_state(cfg)
-    m = (state or {}).get("metrics", {}) or {}
-    irr = None
-    for r in (state or {}).get("rules", []):
-        if "irrigation" in r["name"] or "rain_inhibit" in r["name"]:
-            irr = r
-            break
     body = render_template_string(
-        DASH, state=state, m=m, fmt=_fmt, irr_rule=irr,
+        DASH, refresh=DASH_REFRESH_SECONDS,
         state_file=cfg.get("state_file", "weather_state.json"))
-    return page(body, page="dash")
+    return page(body, page="dash", title="Dashboard · Precipitation → MQTT")
+
+
+@app.route("/api/state")
+@require_auth
+def api_state():
+    """JSON snapshot the dashboard polls. 503 (not 500) when no data yet so the
+    client can show a friendly 'waiting on monitor' state."""
+    state = load_state(load_raw())
+    if state is None:
+        return jsonify({"error": "no state yet"}), 503
+    return jsonify(state)
+
+
+@app.route("/healthz")
+def healthz():
+    """Unauthenticated liveness + freshness probe for systemd/monitoring."""
+    out = {"web": "ok", "monitor": "unknown", "config_ok": False}
+    try:
+        cfg = load_raw()
+        core_check(cfg)
+        out["config_ok"] = True
+        state = load_state(cfg)
+        if state and state.get("updated"):
+            out["monitor"] = "ok"
+            out["last_update"] = state["updated"]
+            out["mqtt_connected"] = bool(state.get("mqtt_connected"))
+        else:
+            out["monitor"] = "no_data"
+    except Exception as e:
+        out["error"] = str(e)
+    code = 200 if out["config_ok"] else 500
+    return jsonify(out), code
+
+
+@app.route("/favicon.ico")
+def favicon():
+    return Response(status=204)
 
 
 # ---------------------------------------------------------------------------
 # Settings (friendly form for scalar config)
 # ---------------------------------------------------------------------------
 SETTINGS = """
-<form method="post"><div class="card">
-  <h3 style="margin-top:0">Location & polling</h3>
+<form method="post" autocomplete="off">
+<div class="card">
+  <h3>Location &amp; polling</h3>
   <div class="row">
-    <div><label>Latitude</label><input name="latitude" value="{{ c.location.latitude }}"></div>
-    <div><label>Longitude</label><input name="longitude" value="{{ c.location.longitude }}"></div>
+    <div><label>Latitude <span class="hint">(−90…90)</span></label><input name="latitude" value="{{ c.location.latitude }}"></div>
+    <div><label>Longitude <span class="hint">(−180…180)</span></label><input name="longitude" value="{{ c.location.longitude }}"></div>
   </div>
   <div class="row">
-    <div><label>Station ID (optional, blank = nearest)</label>
-      <input name="station_id" value="{{ c.location.station_id or '' }}"></div>
-    <div><label>Poll interval (minutes)</label>
+    <div><label>Station ID <span class="hint">(optional, blank = nearest)</span></label>
+      <input name="station_id" value="{{ c.location.station_id or '' }}" placeholder="e.g. KMGJ"></div>
+    <div><label>Poll interval <span class="hint">(minutes, ≥ 1)</span></label>
       <input name="poll_interval_minutes" value="{{ c.poll_interval_minutes }}"></div>
   </div>
-  <label>User-Agent (NWS requires a real contact)</label>
+  <label>User-Agent <span class="hint">(NWS requires a real contact email/phone)</span></label>
   <input name="user_agent" value="{{ c.user_agent }}">
   <div class="row">
-    <div><label>Rain lookback window (hours)</label>
+    <div><label>Rain lookback window <span class="hint">(hours, 1…720)</span></label>
       <input name="lookback_hours" value="{{ c.precipitation.lookback_hours }}"></div>
-    <div><label>Always publish (heartbeat)</label>
+    <div><label>Always publish <span class="hint">(re-send every cycle as a heartbeat)</span></label>
       <select name="always_publish">
         <option value="false" {{ 'selected' if not c.always_publish }}>false</option>
         <option value="true" {{ 'selected' if c.always_publish }}>true</option>
       </select></div>
   </div>
 </div>
+
 <div class="card">
-  <h3 style="margin-top:0">MQTT broker</h3>
+  <h3>MQTT broker</h3>
   <div class="row">
     <div><label>Host</label><input name="mqtt_host" value="{{ c.mqtt.host }}"></div>
-    <div><label>Port</label><input name="mqtt_port" value="{{ c.mqtt.port }}"></div>
+    <div><label>Port <span class="hint">(1…65535)</span></label><input name="mqtt_port" value="{{ c.mqtt.port }}"></div>
   </div>
   <div class="row">
-    <div><label>Username</label><input name="mqtt_username" value="{{ c.mqtt.username }}"></div>
-    <div><label>Password</label><input name="mqtt_password" type="password" value="{{ c.mqtt.password }}"></div>
+    <div><label>Username <span class="hint">(blank = anonymous)</span></label><input name="mqtt_username" value="{{ c.mqtt.username }}" autocomplete="off"></div>
+    <div><label>Password</label><input name="mqtt_password" type="password" value="{{ c.mqtt.password }}" autocomplete="new-password"></div>
   </div>
   <div class="row">
-    <div><label>QoS</label><input name="mqtt_qos" value="{{ c.mqtt.qos }}"></div>
-    <div><label>Status topic (JSON snapshot, blank = off)</label>
+    <div><label>Client ID</label><input name="mqtt_client_id" value="{{ c.mqtt.client_id }}"></div>
+    <div><label>QoS <span class="hint">(0, 1, 2)</span></label>
+      <select name="mqtt_qos">
+        {% for q in [0,1,2] %}<option value="{{ q }}" {{ 'selected' if c.mqtt.qos == q }}>{{ q }}</option>{% endfor %}
+      </select></div>
+  </div>
+  <div class="row">
+    <div><label>Retain <span class="hint">(broker keeps last value for new subscribers)</span></label>
+      <select name="mqtt_retain">
+        <option value="true" {{ 'selected' if c.mqtt.retain }}>true</option>
+        <option value="false" {{ 'selected' if not c.mqtt.retain }}>false</option>
+      </select></div>
+    <div><label>Status topic <span class="hint">(JSON snapshot, blank = off)</span></label>
       <input name="status_topic" value="{{ c.mqtt.status_topic or '' }}"></div>
   </div>
-  <p class="muted">Changing location or MQTT connection needs a monitor restart.
-   Thresholds, interval and rules apply on the next poll automatically.</p>
+</div>
+
+<div class="card">
+  <h3>Web interface</h3>
+  <div class="row">
+    <div><label>Bind host <span class="hint">(0.0.0.0 = all, 127.0.0.1 = local only)</span></label>
+      <input name="web_host" value="{{ c.web.host }}"></div>
+    <div><label>Port <span class="hint">(1…65535)</span></label><input name="web_port" value="{{ c.web.port }}"></div>
+  </div>
+  <div class="row">
+    <div><label>Login username <span class="hint">(blank = no auth)</span></label>
+      <input name="web_username" value="{{ c.web.username }}" autocomplete="off"></div>
+    <div><label>Login password</label>
+      <input name="web_password" type="password" value="{{ c.web.password }}" autocomplete="new-password"></div>
+  </div>
+  <p class="muted">⚠ Changing <b>location</b>, the <b>MQTT connection</b> (host/port/credentials/client id),
+   or any <b>web interface</b> setting needs a restart of the corresponding service.
+   Thresholds, lookback, poll interval, QoS, retain, status topic and rules apply on the next poll automatically.</p>
   <button type="submit">Save settings</button>
 </div></form>
 """
 
 
 def _num(s):
+    """Parse a form field into int or float; raises ValueError on junk/blank."""
     s = (s or "").strip()
+    if s == "":
+        raise ValueError("value is required")
     try:
         return int(s)
     except ValueError:
         return float(s)
+
+
+def _ranged(name, raw, lo, hi, integer=False):
+    v = _num(raw)
+    if integer:
+        if isinstance(v, float) and not v.is_integer():
+            raise ValueError(f"{name} must be a whole number")
+        v = int(v)
+    if not (lo <= v <= hi):
+        raise ValueError(f"{name} must be between {lo} and {hi}")
+    return v
 
 
 @app.route("/settings", methods=["GET", "POST"])
@@ -342,36 +522,69 @@ def settings():
     if request.method == "POST":
         f = request.form
         try:
-            cfg["location"]["latitude"] = _num(f["latitude"])
-            cfg["location"]["longitude"] = _num(f["longitude"])
+            ua = f.get("user_agent", "").strip()
+            if not ua:
+                raise ValueError("User-Agent is required (NWS rejects requests without one)")
+
+            loc = cfg["location"]
+            loc["latitude"] = _ranged("Latitude", f.get("latitude"), -90, 90)
+            loc["longitude"] = _ranged("Longitude", f.get("longitude"), -180, 180)
             st = f.get("station_id", "").strip()
             if st:
-                cfg["location"]["station_id"] = _qstr(st)
-            elif "station_id" in cfg["location"]:
-                del cfg["location"]["station_id"]
-            cfg["user_agent"] = _qstr(f["user_agent"].strip())
-            cfg["poll_interval_minutes"] = _num(f["poll_interval_minutes"])
+                loc["station_id"] = _qstr(st)
+            elif "station_id" in loc:
+                del loc["station_id"]
+
+            cfg["user_agent"] = _qstr(ua)
+            cfg["poll_interval_minutes"] = _ranged(
+                "Poll interval", f.get("poll_interval_minutes"), 1, 1440, integer=True)
             cfg["always_publish"] = f.get("always_publish") == "true"
-            cfg.setdefault("precipitation", {})["lookback_hours"] = _num(f["lookback_hours"])
+            cfg.setdefault("precipitation", {})["lookback_hours"] = _ranged(
+                "Lookback window", f.get("lookback_hours"), 1, 720, integer=True)
+
             mq = cfg["mqtt"]
-            mq["host"] = _qstr(f["mqtt_host"].strip())
-            mq["port"] = _num(f["mqtt_port"])
-            mq["username"] = _qstr(f["mqtt_username"])
-            mq["password"] = _qstr(f["mqtt_password"])
-            mq["qos"] = _num(f["mqtt_qos"])
+            mq["host"] = _qstr(f.get("mqtt_host", "").strip() or "localhost")
+            mq["port"] = _ranged("MQTT port", f.get("mqtt_port"), 1, 65535, integer=True)
+            mq["username"] = _qstr(f.get("mqtt_username", ""))
+            mq["password"] = _qstr(f.get("mqtt_password", ""))
+            mq["client_id"] = _qstr(f.get("mqtt_client_id", "").strip() or "weather-mqtt-controller")
+            mq["qos"] = _ranged("QoS", f.get("mqtt_qos"), 0, 2, integer=True)
+            mq["retain"] = f.get("mqtt_retain", "true") == "true"
             mq["status_topic"] = _qstr(f.get("status_topic", "").strip())
+
+            web = cfg.setdefault("web", {})
+            web["host"] = _qstr(f.get("web_host", "").strip() or "0.0.0.0")
+            web["port"] = _ranged("Web port", f.get("web_port"), 1, 65535, integer=True)
+            web["username"] = _qstr(f.get("web_username", "").strip())
+            web["password"] = _qstr(f.get("web_password", ""))
+
             save_config(cfg)
-            msg, msgclass = "Settings saved. Changes apply on the next poll cycle.", "ok"
+            msg, msgclass = ("Settings saved. Thresholds/MQTT-publish/rules apply on the "
+                             "next poll; location, MQTT connection and web changes need a "
+                             "service restart.", "ok")
             cfg = load_raw()
         except Exception as e:
             msg, msgclass = f"Could not save: {e}", "err"
+            cfg = load_raw()  # discard partial in-memory edits; show what's on disk
 
-    # normalize for template access
+    # normalize for template access (defaults if a key is absent)
     cfg.setdefault("precipitation", {}).setdefault("lookback_hours", 24)
     cfg["location"].setdefault("station_id", None)
-    cfg["mqtt"].setdefault("status_topic", "")
+    mqd = cfg.setdefault("mqtt", {})
+    mqd.setdefault("status_topic", "")
+    mqd.setdefault("client_id", "weather-mqtt-controller")
+    mqd.setdefault("qos", 1)
+    mqd.setdefault("retain", True)
+    mqd.setdefault("username", "")
+    mqd.setdefault("password", "")
+    webd = cfg.setdefault("web", {})
+    webd.setdefault("host", "0.0.0.0")
+    webd.setdefault("port", 8080)
+    webd.setdefault("username", "")
+    webd.setdefault("password", "")
     body = render_template_string(SETTINGS, c=cfg)
-    return page(body, page="settings", msg=msg, msgclass=msgclass)
+    return page(body, page="settings", msg=msg, msgclass=msgclass,
+                title="Settings · Precipitation → MQTT")
 
 
 # ---------------------------------------------------------------------------
@@ -379,14 +592,42 @@ def settings():
 # ---------------------------------------------------------------------------
 RULES = """
 <form method="post"><div class="card">
-  <h3 style="margin-top:0">Rules</h3>
-  <p class="muted">YAML for the <code>rules:</code> list. The first rule
-   controls irrigation. A rule's <code>when</code> can be a single condition or
-   an <code>any</code>/<code>all</code> group. Validated before saving.</p>
+  <h3>Rules</h3>
+  <p class="muted">YAML for the <code>rules:</code> list. The first rule controls
+   irrigation. A rule's <code>when</code> can be a single condition or an
+   <code>any</code> (OR) / <code>all</code> (AND) group. The whole list is
+   validated before saving; on error nothing is written and your text is kept.</p>
   <label>rules:</label>
-  <textarea name="rules_yaml">{{ rules_yaml }}</textarea>
-  <button type="submit">Save rules</button>
+  <textarea name="rules_yaml" id="rules_yaml" spellcheck="false">{{ rules_yaml }}</textarea>
+  <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+    <button type="submit">Save rules</button>
+    <button type="button" id="add-example" style="background:#1d2c49">Append example rule</button>
+  </div>
+  <details style="margin-top:16px">
+    <summary class="muted" style="cursor:pointer">Available metrics &amp; operators</summary>
+    <table style="margin-top:10px">
+      <thead><tr><th>Metric</th><th>Meaning</th><th>Operators</th></tr></thead>
+      <tbody>
+        <tr><td><code>is_raining</code></td><td>precipitating right now</td><td><code>== !=</code></td></tr>
+        <tr><td><code>precip_accum_in</code></td><td>measured rain over lookback (in)</td><td><code>&lt; &lt;= &gt; &gt;= == !=</code></td></tr>
+        <tr><td><code>precipitation_probability</code></td><td>forecast chance (%)</td><td><code>&lt; &lt;= &gt; &gt;= == !=</code></td></tr>
+        <tr><td><code>temperature</code></td><td>air temp (°F)</td><td><code>&lt; &lt;= &gt; &gt;= == !=</code></td></tr>
+        <tr><td><code>wind_speed_mph</code></td><td>wind speed (mph)</td><td><code>&lt; &lt;= &gt; &gt;= == !=</code></td></tr>
+        <tr><td><code>humidity</code></td><td>relative humidity (%)</td><td><code>&lt; &lt;= &gt; &gt;= == !=</code></td></tr>
+        <tr><td><code>short_forecast</code></td><td>text e.g. "Light Rain"</td><td><code>contains equals</code></td></tr>
+        <tr><td><code>active_alert</code></td><td>NWS watches/warnings</td><td><code>any contains equals</code></td></tr>
+      </tbody>
+    </table>
+  </details>
 </div></form>
+<script>
+const EXAMPLE = "\\n- name: high_wind_hold\\n  description: \\"Pause watering in high wind\\"\\n  when:\\n    metric: wind_speed_mph\\n    operator: \\">=\\"\\n    value: 25\\n  topic: \\"facility/weather/high_wind\\"\\n  on_match: \\"1\\"\\n  on_clear: \\"0\\"\\n";
+document.getElementById("add-example").addEventListener("click", () => {
+  const ta = document.getElementById("rules_yaml");
+  ta.value = ta.value.replace(/\\s*$/, "") + "\\n" + EXAMPLE;
+  ta.focus();
+});
+</script>
 """
 
 
@@ -419,7 +660,8 @@ def rules():
     import yaml as _y2
     rules_yaml = _y2.safe_dump(_to_plain(cfg["rules"]), sort_keys=False)
     body = render_template_string(RULES, rules_yaml=rules_yaml)
-    return page(body, page="rules", msg=msg, msgclass=msgclass)
+    return page(body, page="rules", msg=msg, msgclass=msgclass,
+                title="Rules · Precipitation → MQTT")
 
 
 def _to_plain(obj):
