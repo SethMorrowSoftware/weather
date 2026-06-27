@@ -1,0 +1,43 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "weather-mqtt"
+version = "1.0.0"
+description = "Watch rainfall from the National Weather Service and publish MQTT directives so irrigation PLCs know when not to water."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "Seth Morrow Software" }]
+keywords = ["mqtt", "weather", "nws", "irrigation", "precipitation", "home-automation"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Topic :: Home Automation",
+    "Topic :: System :: Monitoring",
+    "Operating System :: POSIX :: Linux",
+]
+dependencies = [
+    "requests>=2.31",
+    "paho-mqtt>=2.0",
+    "PyYAML>=6.0",
+    "Flask>=3.0",
+    "ruamel.yaml>=0.17",
+]
+
+[project.optional-dependencies]
+# The monitor alone only needs the first three deps above; "web" is a convenience
+# alias for the Flask dashboard requirements (already included by default).
+web = ["Flask>=3.0", "ruamel.yaml>=0.17"]
+
+[project.scripts]
+weather-mqtt = "weather_mqtt:main"
+weather-webui = "webui:main"
+weather-mqtt-setup = "setup_wizard:main"
+
+[project.urls]
+Homepage = "https://github.com/SethMorrowSoftware/weather"
+Repository = "https://github.com/SethMorrowSoftware/weather"
+
+[tool.setuptools]
+py-modules = ["weather_mqtt", "webui", "setup_wizard"]

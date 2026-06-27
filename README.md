@@ -41,26 +41,65 @@ nothing about what already fell. For "has it rained X in the last 24h" you need
 **measured** accumulation, which is what `precip_accum_in` provides from real
 station observations. The probability metric is still available if you want it.
 
+## Quick start (one command)
+
+On a fresh **Debian/Ubuntu** server, this installs Mosquitto and the controller,
+runs a short setup wizard, and starts everything as systemd services:
+
+```bash
+git clone https://github.com/SethMorrowSoftware/weather.git
+cd weather
+sudo ./install.sh
+```
+
+The wizard asks for your latitude/longitude and an NWS contact, then writes
+`config.yaml`. When it finishes, the dashboard is live at
+`http://<server-ip>:8080`. That's it.
+
+`install.sh` is idempotent (safe to re-run) and:
+
+- installs `python3-venv`, `mosquitto`, and `mosquitto-clients`;
+- creates a `weather` service account and a virtualenv in `/opt/weather-mqtt`;
+- writes a local Mosquitto listener (`localhost:1883`) the controller uses;
+- installs and starts the `weather-mqtt` and `weather-webui` services.
+
+Override locations with env vars, e.g.
+`sudo INSTALL_DIR=/srv/weather SERVICE_USER=weatherbot ./install.sh`, or skip the
+broker setup (already have one?) with `sudo SETUP_MOSQUITTO=0 ./install.sh`.
+
 ## Requirements
 
 - Ubuntu/Linux server with Python 3.9+
-- An MQTT broker reachable on the network (e.g. Mosquitto). To install one
-  locally: `sudo apt install mosquitto mosquitto-clients`
+- An MQTT broker (e.g. Mosquitto). `install.sh` sets one up for you; otherwise
+  install one with `sudo apt install mosquitto mosquitto-clients`.
 
-## Install
+## Manual / pip install
+
+Prefer to do it by hand, or installing as a Python package?
+
+```bash
+# As a package (provides the weather-mqtt, weather-webui,
+# and weather-mqtt-setup commands):
+pip install .
+weather-mqtt-setup            # interactive wizard -> writes config.yaml
+weather-webui --config config.yaml
+```
+
+Or the classic layout:
 
 ```bash
 sudo mkdir -p /opt/weather-mqtt
-sudo cp weather_mqtt.py webui.py config.yaml requirements.txt /opt/weather-mqtt/
+sudo cp weather_mqtt.py webui.py setup_wizard.py config.yaml requirements.txt /opt/weather-mqtt/
 cd /opt/weather-mqtt
-
 python3 -m venv venv
 ./venv/bin/pip install -r requirements.txt
+./venv/bin/python setup_wizard.py     # or edit config.yaml by hand
 ```
 
 ## Configure
 
-Edit `config.yaml` (or use the web UI below):
+Run the wizard (`weather-mqtt-setup` / `setup_wizard.py`) or edit `config.yaml`
+directly (or use the web UI below):
 
 - **`location`** — set your facility's `latitude` / `longitude`. Optionally pin
   `station_id` if the nearest station doesn't report precipitation (list

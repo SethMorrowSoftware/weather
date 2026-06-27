@@ -134,6 +134,29 @@ def test_load_config_coerces_boolean_payloads(tmp=None):
         os.unlink(p)
 
 
+def test_setup_wizard_renders_valid_config():
+    """Whatever the wizard collects, the file it would write must load + validate."""
+    try:
+        import setup_wizard
+    except Exception as e:
+        print(f"  SKIP  test_setup_wizard_renders_valid_config ({e})")
+        return
+    import yaml
+    answers = {
+        "lat": 41.25, "lon": -74.27, "user_agent": "weather-mqtt-controller (a@b.com)",
+        "threshold": 0.25, "lookback": 24, "poll": 15,
+        "web_host": "0.0.0.0", "web_port": 8080, "web_user": "admin", "web_pass": "pw",
+        "mqtt_host": "localhost", "mqtt_port": 1883, "mqtt_user": "", "mqtt_pass": "",
+    }
+    parsed = yaml.safe_load(setup_wizard._render(answers))
+    w.validate_config(parsed)
+    assert parsed["web"]["username"] == "admin"
+    assert parsed["location"]["latitude"] == 41.25
+    # and with no web auth
+    answers2 = dict(answers, web_user="", web_pass="")
+    w.validate_config(yaml.safe_load(setup_wizard._render(answers2)))
+
+
 def test_detect_raining_ignores_vicinity_and_fog():
     # precip near but not at the station must NOT read as raining
     assert w.detect_raining({"textDescription": "Showers in Vicinity"}) is False
