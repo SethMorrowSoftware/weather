@@ -114,16 +114,6 @@ rules:
 
   # Optional extra signals you can wire up on the PLC/SCADA side. Delete any
   # you don't need. (Quote payloads -- unquoted ON/OFF/YES/NO become booleans.)
-  - name: freeze_protection
-    description: "Energize heat trace / drip faucets below freezing"
-    when:
-      metric: temperature
-      operator: "<="
-      value: 35
-    topic: "facility/weather/freeze_protection"
-    on_match: "ON"
-    on_clear: "OFF"
-
   - name: any_nws_alert
     description: "Generic flag whenever ANY NWS alert is active for our area"
     when:

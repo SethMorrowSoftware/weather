@@ -55,7 +55,7 @@ function agoText(iso) {
   };
   const LOOKBACK = 24;
   let current = "wet";
-  let lastChange = { irrigation_rain_inhibit: isoNow(), freeze_protection: null, any_nws_alert: isoNow() };
+  let lastChange = { irrigation_rain_inhibit: isoNow(), any_nws_alert: isoNow() };
   let prevActive = {};
 
   function round(n, d) { const p = Math.pow(10, d); return Math.round(n * p) / p; }
@@ -66,9 +66,6 @@ function agoText(iso) {
       { name: "irrigation_rain_inhibit", description: "Hold irrigation when raining or >= 0.25 in / 24h",
         topic: "irrigation/rain_inhibit", on_match: "INHIBIT", on_clear: "ALLOW",
         active: m.is_raining || m.precip_accum_in >= 0.25 },
-      { name: "freeze_protection", description: "Energize heat trace below freezing",
-        topic: "facility/weather/freeze_protection", on_match: "ON", on_clear: "OFF",
-        active: m.temperature <= 35 },
       { name: "any_nws_alert", description: "Flag whenever any NWS alert is active",
         topic: "facility/weather/nws_alert", on_match: "1", on_clear: "0",
         active: m.active_alerts.length > 0 },
