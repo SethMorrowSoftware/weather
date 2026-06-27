@@ -1,0 +1,15 @@
+[Unit]
+Description=Weather-driven MQTT controller (NWS / weather.gov)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=weather
+WorkingDirectory=/opt/weather-mqtt
+ExecStart=/opt/weather-mqtt/venv/bin/python /opt/weather-mqtt/weather_mqtt.py --config /opt/weather-mqtt/config.yaml
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,107 @@
+# ===========================================================================
+# Weather -> MQTT controller configuration
+# Data source: National Weather Service (api.weather.gov) -- US only, no key.
+# ===========================================================================
+
+# --- Your facility's location ----------------------------------------------
+# Decimal degrees. REPLACE THESE with your actual coordinates.
+location:
+  latitude: 41.2459      # <-- set to your facility
+  longitude: -74.2735    # <-- set to your facility
+
+# NWS requires a User-Agent that identifies your app + a real contact, so they
+# can reach you if your polling misbehaves. Put a working email or phone here.
+user_agent: "facility-weather-controller (ops@example.com)"
+
+# How often to poll the weather and re-evaluate rules.
+poll_interval_minutes: 15
+
+# false (default): publish only when a rule's state changes.
+# true:            re-publish every rule's current state every cycle (heartbeat).
+# Set true if your broker may restart and you depend on retained values.
+always_publish: false
+
+# --- MQTT broker -----------------------------------------------------------
+mqtt:
+  host: "localhost"
+  port: 1883
+  username: ""           # leave blank for anonymous brokers
+  password: ""
+  client_id: "weather-mqtt-controller"
+  qos: 1
+  retain: true           # broker keeps the last value for new subscribers
+
+# --- Rules -----------------------------------------------------------------
+# Each rule watches ONE metric. When the condition becomes true it publishes
+# `on_match` to `topic`; when it goes false again it publishes `on_clear`.
+# Omit `on_clear` if a rule should only ever fire its "on" event.
+#
+# Available metrics:
+#   temperature                current air temp, degF (measured if available)
+#   wind_speed_mph             current wind speed, mph
+#   precipitation_probability  chance of precip, 0-100 (%)
+#   humidity                   relative humidity, 0-100 (%)
+#   short_forecast             text e.g. "Light Snow"   (operators: contains, equals)
+#   active_alert               NWS watches/warnings     (operators: any | contains | equals)
+#
+# Numeric operators:  <  <=  >  >=  ==  !=
+# ---------------------------------------------------------------------------
+rules:
+  - name: freeze_protection
+    description: "Energize heat trace / drip faucets below freezing"
+    when:
+      metric: temperature
+      operator: "<="
+      value: 35
+    topic: "facility/weather/freeze_protection"
+    on_match: "ON"
+    on_clear: "OFF"
+
+  - name: cooling
+    description: "Kick on extra cooling in the heat"
+    when:
+      metric: temperature
+      operator: ">="
+      value: 88
+    topic: "facility/weather/cooling"
+    on_match: "ON"
+    on_clear: "OFF"
+
+  - name: secure_for_wind
+    description: "Retract awnings / secure loose equipment in high wind"
+    when:
+      metric: wind_speed_mph
+      operator: ">="
+      value: 30
+    topic: "facility/weather/secure_equipment"
+    on_match: "SECURE"
+    on_clear: "NORMAL"
+
+  - name: close_vents_rain
+    description: "Close roof vents when rain is likely"
+    when:
+      metric: precipitation_probability
+      operator: ">="
+      value: 60
+    topic: "facility/weather/roof_vents"
+    on_match: "CLOSE"
+    on_clear: "OPEN"
+
+  - name: winter_weather_alert
+    description: "React to any active winter-weather alert from NWS"
+    when:
+      metric: active_alert
+      operator: "contains"
+      value: "Winter"
+    topic: "facility/weather/winter_alert"
+    on_match: "ACTIVE"
+    on_clear: "CLEAR"
+
+  - name: any_nws_alert
+    description: "Generic flag whenever ANY NWS alert is active for our area"
+    when:
+      metric: active_alert
+      operator: "any"
+    topic: "facility/weather/nws_alert"
+    on_match: "1"
+    on_clear: "0"
