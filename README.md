@@ -141,8 +141,12 @@ raised to the 1-minute floor so the free NWS API is never hammered).
 Configure it under the `web:` section of `config.yaml` (`enabled`, `host`,
 `port`, and optional `username`/`password` for basic auth). It uses Flask's
 development server — fine for a trusted control network. To expose it more
-broadly, put it behind nginx/Caddy and enable auth. When a `username` is set,
-basic-auth credentials are checked in constant time.
+broadly, put it behind nginx/Caddy and enable auth. To enable the login set
+**both** `username` and `password` (the Settings form refuses a username with no
+password); credentials are compared in constant time, and the UI fails **closed**
+— if `config.yaml` can't be read it denies access rather than serving the editor
+unauthenticated. Saved passwords are never echoed back into the page; leave a
+password field blank to keep the stored value.
 
 ### Static UI demo
 

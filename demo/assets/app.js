@@ -154,7 +154,9 @@ function isoNow() { return new Date().toISOString().replace(/\.\d+Z$/, "Z"); }
   if (!form) return;
 
   function validateField(el) {
-    const errBox = el.parentElement.querySelector(".field-err");
+    // scope to THIS field's own error box (direct child of its wrapper), not the
+    // first .field-err in an ancestor card
+    const errBox = el.parentElement.querySelector(":scope > .field-err");
     const raw = (el.value || "").trim();
     const type = el.dataset.type;          // "num" | "int" | undefined
     let err = "";
@@ -228,6 +230,7 @@ function isoNow() { return new Date().toISOString().replace(/\.\d+Z$/, "Z"); }
       c=document.createElement("input"); c.className="c-val"; c.type="text";
       c.value = value!=null ? value : ""; c.placeholder="text";
     }
+    c.setAttribute("aria-label","condition value");
     return c;
   }
   function fillOps(sel, metric, chosen){
@@ -240,10 +243,12 @@ function isoNow() { return new Date().toISOString().replace(/\.\d+Z$/, "Z"); }
     cond = cond || {metric:METRIC_NAMES[0], operator:"", value:""};
     const row = el("div","cond row");
     const metricWrap = el("div"); const m=document.createElement("select"); m.className="c-metric";
+    m.setAttribute("aria-label","metric");
     METRIC_NAMES.forEach(n=> m.appendChild(opt(n,n, n===cond.metric)));
     if(!METRICS[cond.metric]) m.value=METRIC_NAMES[0];
     metricWrap.appendChild(m);
     const opWrap = el("div"); const o=document.createElement("select"); o.className="c-op";
+    o.setAttribute("aria-label","operator");
     fillOps(o, m.value, cond.operator); opWrap.appendChild(o);
     const valWrap = el("div","c-val-wrap"); valWrap.appendChild(valueControl(m.value, cond.value));
     const rmWrap = el("div","rm"); const rm=el("button","secondary danger mini","×"); rm.type="button"; rmWrap.appendChild(rm);
@@ -268,13 +273,13 @@ function isoNow() { return new Date().toISOString().replace(/\.\d+Z$/, "Z"); }
     const card = el("div","rule-card");
     card.innerHTML =
       '<div class="rhead"><span class="idx"></span></div>'+
-      '<div class="row"><div><label>Name</label><input class="f-name"></div>'+
-      '<div><label>Topic</label><input class="f-topic"></div></div>'+
-      '<label>Description <span class="hint">(optional)</span></label><input class="f-desc">'+
-      '<div class="row"><div><label>Payload when matched <span class="hint">(on_match)</span></label><input class="f-onmatch"></div>'+
-      '<div><label>Payload when cleared <span class="hint">(on_clear, optional)</span></label><input class="f-onclear"></div></div>'+
-      '<div class="combine-wrap"><label>When there are multiple conditions, match</label>'+
-      '<select class="f-combine"></select></div>'+
+      '<div class="row"><div><label>Name <input class="f-name"></label></div>'+
+      '<div><label>Topic <input class="f-topic"></label></div></div>'+
+      '<label>Description <span class="hint">(optional)</span> <input class="f-desc"></label>'+
+      '<div class="row"><div><label>Payload when matched <span class="hint">(on_match)</span> <input class="f-onmatch"></label></div>'+
+      '<div><label>Payload when cleared <span class="hint">(on_clear, optional)</span> <input class="f-onclear"></label></div></div>'+
+      '<div class="combine-wrap"><label>When there are multiple conditions, match'+
+      ' <select class="f-combine"></select></label></div>'+
       '<label style="margin-top:14px">Conditions</label><div class="conds"></div>'+
       '<div class="btnrow"><button type="button" class="secondary mini add-cond">+ Add condition</button>'+
       '<button type="button" class="danger mini remove-rule">Remove rule</button></div>';

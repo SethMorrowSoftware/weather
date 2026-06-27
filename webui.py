@@ -120,19 +120,37 @@ def load_state(cfg):
         return None
 
 
+def _config_error_page(page_name, err):
+    """Friendly error instead of a 500 when config.yaml can't be read/parsed."""
+    body = render_template_string(
+        '<div class="card"><h3>Configuration problem</h3>'
+        '<div class="msg err">Could not read config.yaml: {{ err }}</div>'
+        '<p class="muted">Fix the file on disk (check YAML syntax) and reload '
+        'this page. The monitor keeps running on its last good config.</p></div>',
+        err=str(err), favicon=FAVICON)
+    return page(body, page=page_name, title="Config error · Precipitation → MQTT")
+
+
 # ---------------------------------------------------------------------------
 # Optional basic auth
 # ---------------------------------------------------------------------------
 def _auth_ok():
-    """True when the request satisfies basic auth (or auth is disabled)."""
+    """True when the request satisfies basic auth (or auth is disabled).
+
+    Fails CLOSED: if the config can't be read we deny rather than silently
+    serving the config editor unauthenticated. A username with an empty password
+    is treated as misconfigured and also denied (the Settings form refuses to
+    save that combination, but a hand-edit shouldn't open a hole)."""
     try:
         web = (load_raw().get("web", {}) or {})
     except Exception:
-        web = {}
+        return False  # config unreadable -> deny, never fail open
     user = str(web.get("username", "") or "")
     pw = str(web.get("password", "") or "")
-    if not user:
-        return True  # no username configured -> auth disabled (trusted LAN)
+    if not user and not pw:
+        return True  # no credentials configured -> auth disabled (trusted LAN)
+    if not user or not pw:
+        return False  # half-configured credentials -> deny, don't accept blanks
     auth = request.authorization
     if not auth or auth.username is None or auth.password is None:
         return False
@@ -168,7 +186,7 @@ BASE = """
 <style>
  :root{
    --bg:#0b1220;--panel:#111c30;--panel2:#0d1626;--line:#26344b;--line2:#1b2740;
-   --ink:#e6edf6;--muted:#8aa0bd;--muted2:#5f7494;--accent:#3b82f6;--accent2:#2563eb;
+   --ink:#e6edf6;--muted:#9fb3cd;--muted2:#7d93b3;--accent:#3b82f6;--accent2:#2563eb;
    --good:#22c55e;--bad:#f87171;--warn:#fbbf24;
  }
  *{box-sizing:border-box}
@@ -217,6 +235,14 @@ BASE = """
  button{background:var(--accent2);color:#fff;border:0;border-radius:9px;padding:11px 20px;
    font-size:14px;font-weight:700;cursor:pointer;margin-top:18px}
  button:hover{background:var(--accent)}
+ button.secondary{background:#1d2c49}
+ button.secondary:hover{background:#26395e}
+ button.danger{background:#3a1115;color:#fecaca;box-shadow:0 0 0 1px #7f1d1d inset}
+ button.danger:hover{background:#511a20}
+ button.mini{padding:8px 12px;margin-top:0}
+ .btnrow{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+ .field-err{color:#fda4a4;font-size:12px;margin-top:5px;min-height:14px}
+ input.invalid{border-color:var(--bad);box-shadow:0 0 0 3px rgba(248,113,113,.16)}
  .msg{padding:11px 15px;border-radius:9px;margin-bottom:16px;font-size:14px;font-weight:600}
  .ok{background:#0f2e1c;color:#bbf7d0;box-shadow:0 0 0 1px #14532d inset}
  .err{background:#3a1115;color:#fecaca;box-shadow:0 0 0 1px #7f1d1d inset}
@@ -300,6 +326,8 @@ function render(s){
     setText("directive","NO DATA");
     setText("directive-sub","No snapshot yet. Start the monitor (weather_mqtt.py); it writes one each poll cycle.");
     conn.innerHTML = '<span class="dot idle"></span>no monitor data';
+    const tb = document.getElementById("rulebody");
+    if(tb) tb.innerHTML = '<tr><td colspan="5" class="muted">Waiting on the monitor…</td></tr>';
     return;
   }
   // connection badge
@@ -369,7 +397,10 @@ DASH_REFRESH_SECONDS = 20
 @app.route("/")
 @require_auth
 def dashboard():
-    cfg = load_raw()
+    try:
+        cfg = load_raw()
+    except Exception as e:
+        return _config_error_page("dash", e)
     body = render_template_string(
         DASH, refresh=DASH_REFRESH_SECONDS,
         state_file=cfg.get("state_file", "weather_state.json"))
@@ -381,7 +412,10 @@ def dashboard():
 def api_state():
     """JSON snapshot the dashboard polls. 503 (not 500) when no data yet so the
     client can show a friendly 'waiting on monitor' state."""
-    state = load_state(load_raw())
+    try:
+        state = load_state(load_raw())
+    except Exception as e:
+        return jsonify({"error": f"config unreadable: {e}"}), 500
     if state is None:
         return jsonify({"error": "no state yet"}), 503
     return jsonify(state)
@@ -402,8 +436,10 @@ def healthz():
             out["mqtt_connected"] = bool(state.get("mqtt_connected"))
         else:
             out["monitor"] = "no_data"
-    except Exception as e:
-        out["error"] = str(e)
+    except Exception:
+        # Unauthenticated endpoint: report the failure without leaking config
+        # values/paths in the message.
+        out["error"] = "config invalid or unreadable"
     code = 200 if out["config_ok"] else 500
     return jsonify(out), code
 
@@ -451,7 +487,8 @@ SETTINGS = """
   </div>
   <div class="row">
     <div><label>Username <span class="hint">(blank = anonymous)</span></label><input name="mqtt_username" value="{{ c.mqtt.username }}" autocomplete="off"></div>
-    <div><label>Password</label><input name="mqtt_password" type="password" value="{{ c.mqtt.password }}" autocomplete="new-password"></div>
+    <div><label>Password</label><input name="mqtt_password" type="password" value="" autocomplete="new-password"
+      placeholder="{{ '•••••• — leave blank to keep' if c.mqtt.password else 'none set' }}"></div>
   </div>
   <div class="row">
     <div><label>Client ID</label><input name="mqtt_client_id" value="{{ c.mqtt.client_id }}"></div>
@@ -482,7 +519,8 @@ SETTINGS = """
     <div><label>Login username <span class="hint">(blank = no auth)</span></label>
       <input name="web_username" value="{{ c.web.username }}" autocomplete="off"></div>
     <div><label>Login password</label>
-      <input name="web_password" type="password" value="{{ c.web.password }}" autocomplete="new-password"></div>
+      <input name="web_password" type="password" value="" autocomplete="new-password"
+        placeholder="{{ '•••••• — leave blank to keep' if c.web.password else 'set to enable login' }}"></div>
   </div>
   <p class="muted">⚠ Changing <b>location</b>, the <b>MQTT connection</b> (host/port/credentials/client id),
    or any <b>web interface</b> setting needs a restart of the corresponding service.
@@ -517,7 +555,10 @@ def _ranged(name, raw, lo, hi, integer=False):
 @app.route("/settings", methods=["GET", "POST"])
 @require_auth
 def settings():
-    cfg = load_raw()
+    try:
+        cfg = load_raw()
+    except Exception as e:
+        return _config_error_page("settings", e)
     msg = msgclass = None
     if request.method == "POST":
         f = request.form
@@ -526,7 +567,7 @@ def settings():
             if not ua:
                 raise ValueError("User-Agent is required (NWS rejects requests without one)")
 
-            loc = cfg["location"]
+            loc = cfg.setdefault("location", {})
             loc["latitude"] = _ranged("Latitude", f.get("latitude"), -90, 90)
             loc["longitude"] = _ranged("Longitude", f.get("longitude"), -180, 180)
             st = f.get("station_id", "").strip()
@@ -542,11 +583,15 @@ def settings():
             cfg.setdefault("precipitation", {})["lookback_hours"] = _ranged(
                 "Lookback window", f.get("lookback_hours"), 1, 720, integer=True)
 
-            mq = cfg["mqtt"]
+            mq = cfg.setdefault("mqtt", {})
             mq["host"] = _qstr(f.get("mqtt_host", "").strip() or "localhost")
             mq["port"] = _ranged("MQTT port", f.get("mqtt_port"), 1, 65535, integer=True)
             mq["username"] = _qstr(f.get("mqtt_username", ""))
-            mq["password"] = _qstr(f.get("mqtt_password", ""))
+            # Password fields are never echoed back, so a blank submission means
+            # "keep the stored password" rather than "wipe it".
+            if f.get("mqtt_password", ""):
+                mq["password"] = _qstr(f.get("mqtt_password"))
+            mq.setdefault("password", "")
             mq["client_id"] = _qstr(f.get("mqtt_client_id", "").strip() or "weather-mqtt-controller")
             mq["qos"] = _ranged("QoS", f.get("mqtt_qos"), 0, 2, integer=True)
             mq["retain"] = f.get("mqtt_retain", "true") == "true"
@@ -556,7 +601,14 @@ def settings():
             web["host"] = _qstr(f.get("web_host", "").strip() or "0.0.0.0")
             web["port"] = _ranged("Web port", f.get("web_port"), 1, 65535, integer=True)
             web["username"] = _qstr(f.get("web_username", "").strip())
-            web["password"] = _qstr(f.get("web_password", ""))
+            if f.get("web_password", ""):
+                web["password"] = _qstr(f.get("web_password"))
+            web.setdefault("password", "")
+            # Refuse a username with no password: it looks like auth is on but
+            # accepts a blank password. Require both, or neither.
+            if web["username"] and not str(web.get("password") or ""):
+                raise ValueError("set a login password too (or clear the username "
+                                 "to disable the login)")
 
             save_config(cfg)
             msg, msgclass = ("Settings saved. Thresholds/MQTT-publish/rules apply on the "
@@ -569,7 +621,7 @@ def settings():
 
     # normalize for template access (defaults if a key is absent)
     cfg.setdefault("precipitation", {}).setdefault("lookback_hours", 24)
-    cfg["location"].setdefault("station_id", None)
+    cfg.setdefault("location", {}).setdefault("station_id", None)
     mqd = cfg.setdefault("mqtt", {})
     mqd.setdefault("status_topic", "")
     mqd.setdefault("client_id", "weather-mqtt-controller")
@@ -590,18 +642,12 @@ def settings():
 # ---------------------------------------------------------------------------
 # Rules — structured form builder + raw YAML editor
 # ---------------------------------------------------------------------------
-# Single source of truth for which metrics exist, their value type, and the
-# operators each accepts. Shared with the browser (serialized into the page) so
-# the builder and the server validate against exactly the same rules.
+# Derived from the monitor's canonical METRIC_SPECS so the builder, this server,
+# and the monitor's own validator can never disagree about valid metrics/ops.
+# Serialized into the page for the browser-side builder.
 RULE_METRICS = {
-    "is_raining":                {"type": "bool",   "ops": ["==", "!="]},
-    "precip_accum_in":           {"type": "number", "ops": ["<", "<=", ">", ">=", "==", "!="]},
-    "precipitation_probability": {"type": "number", "ops": ["<", "<=", ">", ">=", "==", "!="]},
-    "temperature":               {"type": "number", "ops": ["<", "<=", ">", ">=", "==", "!="]},
-    "wind_speed_mph":            {"type": "number", "ops": ["<", "<=", ">", ">=", "==", "!="]},
-    "humidity":                  {"type": "number", "ops": ["<", "<=", ">", ">=", "==", "!="]},
-    "short_forecast":            {"type": "text",   "ops": ["contains", "equals"]},
-    "active_alert":              {"type": "alert",  "ops": ["any", "contains", "equals"]},
+    name: {"type": spec["type"], "ops": list(spec["ops"])}
+    for name, spec in core.METRIC_SPECS.items()
 }
 
 
@@ -828,6 +874,7 @@ function valueControl(metric, value){
     c=document.createElement("input"); c.className="c-val"; c.type="text";
     c.value = value!=null ? value : ""; c.placeholder="text";
   }
+  c.setAttribute("aria-label","condition value");
   return c;
 }
 
@@ -842,10 +889,12 @@ function condRow(cond){
   cond = cond || {metric:METRIC_NAMES[0], operator:"", value:""};
   const row = el("div","cond row");
   const metricWrap = el("div"); const m = document.createElement("select"); m.className="c-metric";
+  m.setAttribute("aria-label","metric");
   METRIC_NAMES.forEach(n=> m.appendChild(opt(n,n, n===cond.metric)));
   if(!METRICS[cond.metric]) m.value=METRIC_NAMES[0];
   metricWrap.appendChild(m);
   const opWrap = el("div"); const o=document.createElement("select"); o.className="c-op";
+  o.setAttribute("aria-label","operator");
   fillOps(o, m.value, cond.operator); opWrap.appendChild(o);
   const valWrap = el("div","c-val-wrap"); valWrap.appendChild(valueControl(m.value, cond.value));
   const rmWrap = el("div","rm"); const rm=el("button","secondary danger mini","×"); rm.type="button";
@@ -874,13 +923,13 @@ function ruleCard(rule){
   const card = el("div","rule-card");
   card.innerHTML =
     '<div class="rhead"><span class="idx"></span></div>'+
-    '<div class="row"><div><label>Name</label><input class="f-name"></div>'+
-    '<div><label>Topic</label><input class="f-topic"></div></div>'+
-    '<label>Description <span class="hint">(optional)</span></label><input class="f-desc">'+
-    '<div class="row"><div><label>Payload when matched <span class="hint">(on_match)</span></label><input class="f-onmatch"></div>'+
-    '<div><label>Payload when cleared <span class="hint">(on_clear, optional)</span></label><input class="f-onclear"></div></div>'+
-    '<div class="combine-wrap"><label>When there are multiple conditions, match</label>'+
-    '<select class="f-combine"></select></div>'+
+    '<div class="row"><div><label>Name <input class="f-name"></label></div>'+
+    '<div><label>Topic <input class="f-topic"></label></div></div>'+
+    '<label>Description <span class="hint">(optional)</span> <input class="f-desc"></label>'+
+    '<div class="row"><div><label>Payload when matched <span class="hint">(on_match)</span> <input class="f-onmatch"></label></div>'+
+    '<div><label>Payload when cleared <span class="hint">(on_clear, optional)</span> <input class="f-onclear"></label></div></div>'+
+    '<div class="combine-wrap"><label>When there are multiple conditions, match'+
+    ' <select class="f-combine"></select></label></div>'+
     '<label style="margin-top:14px">Conditions</label><div class="conds"></div>'+
     '<div class="btnrow"><button type="button" class="secondary mini add-cond">+ Add condition</button>'+
     '<button type="button" class="danger mini remove-rule">Remove rule</button></div>';
@@ -986,7 +1035,10 @@ document.querySelector('.tab[data-tab="'+(ACTIVE_TAB==="yaml"?"yaml":"form")+'"]
 @app.route("/rules", methods=["GET", "POST"])
 @require_auth
 def rules():
-    cfg = load_raw()
+    try:
+        cfg = load_raw()
+    except Exception as e:
+        return _config_error_page("rules", e)
     msg = msgclass = None
     mode = request.form.get("mode", "form") if request.method == "POST" else "form"
     rules_yaml_override = None

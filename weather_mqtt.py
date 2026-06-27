@@ -38,10 +38,66 @@ NWS_API = "https://api.weather.gov"
 CACHE_FILE = Path("nws_location_cache.json")
 
 # Words in NWS present-weather / textDescription that mean "it's precipitating".
+# Note "freezing" is intentionally NOT here: alone it matches "Freezing Fog"
+# (not precipitation). "Freezing Rain"/"Freezing Drizzle" still match via
+# "rain"/"drizzle".
 PRECIP_WORDS = (
     "rain", "drizzle", "shower", "thunderstorm", "sleet",
-    "snow", "wintry", "ice pellets", "hail", "freezing",
+    "snow", "wintry", "ice pellets", "hail",
 )
+# Phrases that mean the precip is NOT falling at the station, so they must not
+# trip is_raining (which would wrongly hold irrigation closed).
+NOT_HERE_WORDS = ("vicinity", "in the area")
+
+# Canonical metric catalogue: value type + the operators each accepts. This is
+# the single source of truth shared by config validation here and the web UI's
+# rule builder (which imports it), so the two can never drift apart.
+NUMERIC_COMPARE = ("<", "<=", ">", ">=", "==", "!=")
+METRIC_SPECS = {
+    "is_raining":                {"type": "bool",   "ops": ("==", "!=")},
+    "precip_accum_in":           {"type": "number", "ops": NUMERIC_COMPARE},
+    "precipitation_probability": {"type": "number", "ops": NUMERIC_COMPARE},
+    "temperature":               {"type": "number", "ops": NUMERIC_COMPARE},
+    "wind_speed_mph":            {"type": "number", "ops": NUMERIC_COMPARE},
+    "humidity":                  {"type": "number", "ops": NUMERIC_COMPARE},
+    "short_forecast":            {"type": "text",   "ops": ("contains", "equals")},
+    "active_alert":              {"type": "alert",  "ops": ("any", "contains", "equals")},
+}
+
+
+def _validate_condition(cond, rule_name):
+    """Validate one rule condition's metric/operator/value. Raises ValueError."""
+    if not isinstance(cond, dict) or "metric" not in cond:
+        raise ValueError(f"rule '{rule_name}': each condition needs a 'metric'")
+    metric = cond["metric"]
+    spec = METRIC_SPECS.get(metric)
+    if spec is None:
+        raise ValueError(f"rule '{rule_name}': unknown metric '{metric}' "
+                         f"(valid: {', '.join(sorted(METRIC_SPECS))})")
+    op = cond.get("operator")
+    if metric == "active_alert" and op in (None, "any"):
+        return  # the "any active alert" form needs no value
+    if op not in spec["ops"]:
+        raise ValueError(f"rule '{rule_name}': operator '{op}' is not valid for "
+                         f"metric '{metric}' (valid: {', '.join(spec['ops'])})")
+    if "value" not in cond or cond["value"] is None:
+        raise ValueError(f"rule '{rule_name}': condition on '{metric}' needs a value")
+    if spec["type"] == "number" and _as_number(cond["value"], None, f"{metric} value") is None:
+        raise ValueError(f"rule '{rule_name}': '{metric}' value "
+                         f"{cond['value']!r} must be a number")
+
+
+def _validate_rule_when(when, rule_name):
+    """Validate a rule's `when` (single condition or any/all group)."""
+    if isinstance(when, dict) and ("any" in when or "all" in when):
+        mode = "any" if "any" in when else "all"
+        group = when[mode]
+        if not isinstance(group, list) or not group:
+            raise ValueError(f"rule '{rule_name}': '{mode}' must be a non-empty list")
+        for c in group:
+            _validate_condition(c, rule_name)
+    else:
+        _validate_condition(when, rule_name)
 
 
 # ---------------------------------------------------------------------------
@@ -104,12 +160,20 @@ def validate_config(cfg):
 
     if not isinstance(cfg["rules"], list) or not cfg["rules"]:
         raise ValueError("'rules' must be a non-empty list")
+    seen_names = set()
     for r in cfg["rules"]:
         if not isinstance(r, dict):
             raise ValueError("each rule must be a mapping")
         for req in ("name", "when", "topic", "on_match"):
             if req not in r:
                 raise ValueError(f"rule '{r.get('name', '?')}' is missing '{req}'")
+        name = r["name"]
+        if name in seen_names:
+            raise ValueError(f"duplicate rule name '{name}' (names must be unique)")
+        seen_names.add(name)
+        # Validate the condition(s) so one malformed rule is caught here rather
+        # than blowing up mid-cycle in the monitor.
+        _validate_rule_when(r["when"], name)
 
     # --- defaults + clamping for the forgiving numeric knobs ---
     poll = _as_number(cfg.get("poll_interval_minutes", 15), 15, "poll_interval_minutes")
@@ -231,13 +295,19 @@ def resolve_location(lat, lon, user_agent, station_override=None):
 
     LOG.info("Resolving NWS grid point for %s,%s ...", lat, lon)
     points = nws_get(f"{NWS_API}/points/{lat},{lon}", user_agent)
-    props = points["properties"]
+    props = (points or {}).get("properties") or {}
+    forecast_hourly = props.get("forecastHourly")
+    stations_url = props.get("observationStations")
+    if not forecast_hourly or not stations_url:
+        raise RuntimeError(
+            f"NWS /points response missing forecast/station URLs for {lat},{lon} "
+            "(is the location inside US coverage?)")
     info = {
         "lat": lat,
         "lon": lon,
         "station_override": station_override,
-        "forecast_hourly": props["forecastHourly"],
-        "stations_url": props["observationStations"],
+        "forecast_hourly": forecast_hourly,
+        "stations_url": stations_url,
         "grid_id": props.get("gridId"),
         "station_id": station_override,
     }
@@ -272,6 +342,8 @@ def to_mm(value, unit_code):
         return value * 1000.0
     if unit in ("cm", "centimeter", "centimeters"):
         return value * 10.0
+    if unit in ("in", "inch", "inches", "[in_i]"):
+        return value * 25.4
     # "mm", "millimeter", or unknown -> assume millimeters
     return float(value)
 
@@ -283,18 +355,29 @@ def mm_to_in(mm):
 # ---------------------------------------------------------------------------
 # Precipitation
 # ---------------------------------------------------------------------------
+def _says_precip(text):
+    """True if `text` names precipitation falling at the station (not nearby)."""
+    t = (text or "").lower()
+    if not t:
+        return False
+    if any(w in t for w in NOT_HERE_WORDS):
+        return False  # e.g. "Showers in Vicinity" -- not at the station
+    return any(word in t for word in PRECIP_WORDS)
+
+
 def detect_raining(obs_props):
     """True if precipitating now, False if clearly not, None if unknown."""
     seen = False
     for w in (obs_props.get("presentWeather") or []):
         seen = True
-        weather = (w.get("weather") or "").lower()
-        if any(word in weather for word in PRECIP_WORDS):
+        if w.get("inVicinity"):
+            continue  # phenomenon is near, not at, the station
+        if _says_precip((w.get("weather") or "") + " " + (w.get("rawString") or "")):
             return True
     text = (obs_props.get("textDescription") or "").strip()
     if text:
         seen = True
-        if any(word in text.lower() for word in PRECIP_WORDS):
+        if _says_precip(text):
             return True
     return False if seen else None
 
@@ -333,7 +416,10 @@ def _accumulate_precip(data, hours, now):
         mm = to_mm(plh.get("value"), plh.get("unitCode"))
         if mm is None:
             continue
-        key = ts[:13]  # hour bucket
+        # Bucket by the parsed UTC hour, not the raw string, so the same instant
+        # written with different timezone offsets can't land in two buckets and
+        # double-count.
+        key = when.astimezone(timezone.utc).strftime("%Y-%m-%dT%H")
         buckets[key] = max(buckets.get(key, 0.0), mm)
 
     if not buckets:
@@ -572,7 +658,37 @@ def main():
     station_override = cfg["location"].get("station_id")
     mq = cfg["mqtt"]
 
-    loc = resolve_location(lat, lon, ua, station_override)
+    stop = {"flag": False}
+
+    def handle_sig(signum, frame):
+        LOG.info("Signal %s received, shutting down ...", signum)
+        stop["flag"] = True
+
+    signal.signal(signal.SIGINT, handle_sig)
+    signal.signal(signal.SIGTERM, handle_sig)
+
+    def interruptible_sleep(seconds):
+        slept = 0
+        while slept < seconds and not stop["flag"]:
+            time.sleep(min(5, seconds - slept))
+            slept += 5
+
+    # Resolve location with backoff instead of crashing if NWS is unreachable at
+    # boot -- otherwise systemd would restart us into a tight crash-loop during
+    # an outage. Stays inside the process so SIGTERM still stops us promptly.
+    loc = None
+    delay = 5
+    while not stop["flag"]:
+        try:
+            loc = resolve_location(lat, lon, ua, station_override)
+            break
+        except Exception as e:
+            LOG.error("Location resolution failed (%s); retrying in %ds", e, delay)
+            interruptible_sleep(delay)
+            delay = min(delay * 2, 300)
+    if loc is None:
+        LOG.info("Stopped before location was resolved.")
+        return
 
     client = None
     if not args.dry_run:
@@ -582,14 +698,6 @@ def main():
 
     last_state = {}            # rule name -> bool
     last_change = {}           # rule name -> iso timestamp of last published change
-    stop = {"flag": False}
-
-    def handle_sig(signum, frame):
-        LOG.info("Signal %s received, shutting down ...", signum)
-        stop["flag"] = True
-
-    signal.signal(signal.SIGINT, handle_sig)
-    signal.signal(signal.SIGTERM, handle_sig)
 
     while not stop["flag"]:
         # Reload config each cycle so web-UI edits to rules / thresholds /
@@ -626,6 +734,7 @@ def main():
 
             rule_rows = []
             for rule in rules:
+              try:
                 result = evaluate_rule(rule, m)
                 if result is not None:
                     prev = last_state.get(rule["name"])
@@ -673,6 +782,11 @@ def main():
                     if last_state.get(rule["name"]) is not None else None,
                     "last_change": last_change.get(rule["name"]),
                 })
+              except Exception as e:
+                # One malformed/erroring rule must not take down the whole
+                # cycle; log it and keep evaluating the rest.
+                LOG.warning("Rule '%s' failed this cycle, skipping: %s",
+                            rule.get("name", "?") if isinstance(rule, dict) else rule, e)
 
             connected = bool(client is not None and client.is_connected())
             write_state(state_file, m, rule_rows, lookback, connected)
@@ -683,10 +797,7 @@ def main():
         if args.once:
             break
 
-        slept = 0  # interruptible sleep so SIGTERM is handled promptly
-        while slept < interval and not stop["flag"]:
-            time.sleep(min(5, interval - slept))
-            slept += 5
+        interruptible_sleep(interval)  # so SIGTERM is handled promptly
 
     if client is not None:
         client.loop_stop()

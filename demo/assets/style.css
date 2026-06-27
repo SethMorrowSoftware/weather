@@ -5,7 +5,7 @@
    =========================================================================== */
 :root{
   --bg:#0b1220;--panel:#111c30;--panel2:#0d1626;--line:#26344b;--line2:#1b2740;
-  --ink:#e6edf6;--muted:#8aa0bd;--muted2:#5f7494;--accent:#3b82f6;--accent2:#2563eb;
+  --ink:#e6edf6;--muted:#9fb3cd;--muted2:#7d93b3;--accent:#3b82f6;--accent2:#2563eb;
   --good:#22c55e;--bad:#f87171;--warn:#fbbf24;
 }
 *{box-sizing:border-box}
