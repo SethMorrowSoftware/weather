@@ -581,6 +581,24 @@ SETTINGS = """
 </div>
 
 <div class="card">
+  <h3>Remote status page</h3>
+  <p class="muted">Push a read‑only copy of the status to an external dashboard each cycle
+   (see <code>cloud-status/</code>). <b>Outbound only</b> — nothing can reach back in, no remote control.</p>
+  <div class="row">
+    <div><label>Enabled</label>
+      <select name="status_push_enabled">
+        <option value="false" {{ 'selected' if not c.status_push.enabled }}>false</option>
+        <option value="true" {{ 'selected' if c.status_push.enabled }}>true</option>
+      </select></div>
+    <div><label>Shared token <span class="hint">(sent as X‑Status‑Token; matches ingest.php)</span></label>
+      <input name="status_push_token" type="password" value="" autocomplete="new-password"
+        placeholder="{{ '•••••• — leave blank to keep' if c.status_push.token else 'a long random secret' }}"></div>
+  </div>
+  <label>Endpoint URL <span class="hint">(your dashboard's ingest.php)</span></label>
+  <input name="status_push_url" value="{{ c.status_push.url or '' }}" placeholder="https://dashboards.example.com/weather/ingest.php">
+</div>
+
+<div class="card">
   <h3>Web interface</h3>
   <div class="row">
     <div><label>Bind host <span class="hint">(0.0.0.0 = all, 127.0.0.1 = local only)</span></label>
@@ -686,6 +704,18 @@ def settings():
                 raise ValueError("Slack alerts need a bot token (set it here or as "
                                  "the SLACK_BOT_TOKEN env var)")
 
+            sp = cfg.setdefault("status_push", {})
+            sp["enabled"] = f.get("status_push_enabled") == "true"
+            sp["url"] = _qstr(f.get("status_push_url", "").strip())
+            if f.get("status_push_token", ""):        # blank = keep stored token
+                sp["token"] = _qstr(f.get("status_push_token"))
+            sp.setdefault("token", "")
+            if sp["enabled"]:
+                if not sp["url"]:
+                    raise ValueError("Remote status page needs an endpoint URL")
+                if not str(sp["url"]).lower().startswith(("http://", "https://")):
+                    raise ValueError("Remote status URL must start with http:// or https://")
+
             web = cfg.setdefault("web", {})
             web["host"] = _qstr(f.get("web_host", "").strip() or "0.0.0.0")
             web["port"] = _ranged("Web port", f.get("web_port"), 1, 65535, integer=True)
@@ -728,6 +758,10 @@ def settings():
     sld.setdefault("channel", "")
     sld.setdefault("bot_token", "")
     sld.setdefault("broker_unreachable_minutes", 60)
+    spd = cfg.setdefault("status_push", {})
+    spd.setdefault("enabled", False)
+    spd.setdefault("url", "")
+    spd.setdefault("token", "")
     body = render_template_string(SETTINGS, c=cfg)
     return page(body, page="settings", msg=msg, msgclass=msgclass,
                 title="Settings · Precipitation → MQTT")

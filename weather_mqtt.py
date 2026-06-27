@@ -228,6 +228,13 @@ def validate_config(cfg):
                       "slack.broker_unreachable_minutes")
     slack["broker_unreachable_minutes"] = max(1, int(mins))
 
+    # --- Remote status push (optional, read-only/outbound) ---
+    sp = cfg.setdefault("status_push", {})
+    sp.setdefault("enabled", False)
+    sp["enabled"] = bool(sp["enabled"])
+    sp.setdefault("url", "")          # https endpoint that receives the snapshot
+    sp.setdefault("token", "")        # shared secret sent in X-Status-Token
+
     # Payloads must be strings. Unquoted ON/OFF/YES/NO in YAML parse as
     # booleans -- coerce and warn so a PLC never gets "True" by surprise.
     for r in cfg["rules"]:
@@ -696,23 +703,51 @@ def notify_slack(slack, text):
 
 
 # ---------------------------------------------------------------------------
-# State snapshot (consumed by the web UI)
+# State snapshot (consumed by the web UI + optional remote status page)
 # ---------------------------------------------------------------------------
-def write_state(path, metrics, rule_rows, lookback, connected):
-    """Atomically write a JSON snapshot of the latest cycle for the web UI."""
-    snapshot = {
+def build_snapshot(metrics, rule_rows, lookback, connected):
+    """The status object the dashboard(s) consume."""
+    return {
         "updated": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "lookback_hours": lookback,
         "mqtt_connected": connected,
         "metrics": metrics,
         "rules": rule_rows,
     }
+
+
+def write_state(path, snapshot):
+    """Atomically write the snapshot JSON for the local web UI."""
     try:
         tmp = Path(str(path) + ".tmp")
         tmp.write_text(json.dumps(snapshot, indent=2))
         tmp.replace(path)
     except Exception as e:
         LOG.warning("Could not write state file %s: %s", path, e)
+
+
+def push_status(cfg, snapshot):
+    """POST the snapshot to an external read-only dashboard. Outbound-only and
+    best-effort: never raises, never affects control. Auth via X-Status-Token."""
+    if not cfg or not cfg.get("enabled"):
+        return False
+    url = cfg.get("url", "")
+    if not url:
+        LOG.warning("status_push enabled but no url is set")
+        return False
+    headers = {"Content-Type": "application/json"}
+    token = cfg.get("token", "")
+    if token:
+        headers["X-Status-Token"] = token
+    try:
+        r = requests.post(url, json=snapshot, headers=headers, timeout=10)
+        if r.status_code // 100 != 2:
+            LOG.warning("status push to %s returned HTTP %s", url, r.status_code)
+            return False
+        return True
+    except Exception as e:
+        LOG.warning("status push failed: %s", e)
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -873,7 +908,9 @@ def main():
                             rule.get("name", "?") if isinstance(rule, dict) else rule, e)
 
             connected = bool(client is not None and client.is_connected())
-            write_state(state_file, m, rule_rows, lookback, connected)
+            snapshot = build_snapshot(m, rule_rows, lookback, connected)
+            write_state(state_file, snapshot)
+            push_status(cfg.get("status_push", {}), snapshot)
 
         except Exception as e:
             LOG.error("Poll cycle failed: %s", e)

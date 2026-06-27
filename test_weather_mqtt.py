@@ -186,6 +186,49 @@ def test_validate_config_slack_defaults_and_clamp():
                              "broker_unreachable_minutes": 60}
 
 
+def test_validate_config_status_push_defaults():
+    cfg = w.validate_config(_min_cfg())
+    assert cfg["status_push"] == {"enabled": False, "url": "", "token": ""}
+    cfg2 = w.validate_config(_min_cfg(status_push={"enabled": True, "url": "https://x/i.php",
+                                                   "token": "t"}))
+    assert cfg2["status_push"]["enabled"] is True
+    assert cfg2["status_push"]["url"] == "https://x/i.php"
+
+
+def test_push_status_guards_and_payload():
+    # disabled / missing url -> no-op, no network, returns False
+    assert w.push_status({"enabled": False}, {"a": 1}) is False
+    assert w.push_status({"enabled": True, "url": ""}, {"a": 1}) is False
+
+    # enabled -> posts the snapshot with the token header (stub requests.post)
+    captured = {}
+
+    class _Resp:
+        status_code = 200
+
+    def _fake_post(url, json=None, headers=None, timeout=None):
+        captured.update(url=url, json=json, headers=headers, timeout=timeout)
+        return _Resp()
+
+    real = w.requests.post
+    w.requests.post = _fake_post
+    try:
+        ok = w.push_status({"enabled": True, "url": "https://h/ingest.php", "token": "sek"},
+                           {"updated": "t", "metrics": {}})
+        assert ok is True
+        assert captured["url"] == "https://h/ingest.php"
+        assert captured["headers"]["X-Status-Token"] == "sek"
+        assert captured["json"] == {"updated": "t", "metrics": {}}
+
+        # non-2xx -> False
+        class _Bad:
+            status_code = 401
+        w.requests.post = lambda *a, **k: _Bad()
+        assert w.push_status({"enabled": True, "url": "https://h/i", "token": "x"}, {}) is False
+    finally:
+        w.requests.post = real
+
+
 def test_setup_wizard_renders_valid_config():
     """Whatever the wizard collects, the file it would write must load + validate."""
     try:

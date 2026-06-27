@@ -10,3 +10,7 @@ venv/
 build/
 dist/
 *.egg-info/
+# cloud-status runtime + secret (ship secret.sample.php, never the real one)
+cloud-status/secret.php
+cloud-status/status.json
+cloud-status/status.json.tmp

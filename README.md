@@ -221,6 +221,28 @@ alerts** card (the token is never echoed back; leave it blank to keep the stored
 one). Detection granularity is one poll cycle, so with the default 15-minute
 poll an alert fires within ~15 minutes of crossing the threshold.
 
+## Remote status page (read-only)
+
+Want to see status over the internet **without exposing the broker or any
+control**? Keep everything on the LAN and have the controller **push** a copy of
+its status, each cycle, to a small read-only page on ordinary PHP/cPanel hosting.
+It's **outbound only** — the controller POSTs to your URL, nothing reaches back
+in, and the page has no controls.
+
+Enable it in `config.yaml` or **Settings → Remote status page**:
+```yaml
+status_push:
+  enabled: true
+  url: "https://your-dashboard-domain/weather/ingest.php"
+  token: "a-long-random-shared-secret"     # sent in the X-Status-Token header
+```
+
+The hosting side lives in [`cloud-status/`](cloud-status/): upload it, copy
+`secret.sample.php` → `secret.php` and set the same token, and browse to it. See
+[`cloud-status/README.md`](cloud-status/README.md) for the full deploy steps. The
+page shows the current directive, conditions, and rule states, with a
+"stale / controller offline" indicator if pushes stop.
+
 ### Static UI demo
 
 `demo/` is a **standalone, static** copy of the interface (sample data, no

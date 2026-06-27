@@ -69,6 +69,16 @@ slack:
   bot_token: ""                     # or set SLACK_BOT_TOKEN in the environment
   broker_unreachable_minutes: 60    # alert after the broker is down this long
 
+# --- Remote status page (optional, read-only) ------------------------------
+# Push a copy of the status snapshot to an external dashboard each cycle. This
+# is OUTBOUND ONLY -- the controller POSTs to your URL; nothing can reach back
+# in and there is no remote control. Pair with cloud-status/ingest.php on your
+# web host. The token is sent in the X-Status-Token header.
+status_push:
+  enabled: false
+  url: ""        # e.g. https://dashboards.example.com/weather/ingest.php
+  token: ""      # shared secret; must match the token in ingest.php
+
 # --- Rules -----------------------------------------------------------------
 # Each rule publishes `on_match` to `topic` when its condition becomes true,
 # and `on_clear` when it becomes false again. Publishing happens only on a
