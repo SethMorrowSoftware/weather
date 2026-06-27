@@ -83,6 +83,27 @@
   </div>
 
   <div class="card">
+    <h3>Slack alerts</h3>
+    <p class="muted">Get a Slack message if the MQTT broker stays unreachable. Needs a Slack
+      <b>bot token</b> (<code>xoxb-…</code>) with <code>chat:write</code>, invited to the channel.</p>
+    <div class="row">
+      <div><label>Enabled</label>
+        <select name="slack_enabled"><option value="false">false</option><option value="true">true</option></select>
+        <div class="field-err"></div></div>
+      <div><label>Alert after broker down for <span class="hint">(minutes)</span></label>
+        <input name="slack_minutes" value="60" data-type="int" data-min="1" data-max="10080">
+        <div class="field-err"></div></div>
+    </div>
+    <div class="row">
+      <div><label>Channel <span class="hint">(#name or ID)</span></label>
+        <input name="slack_channel" value="" placeholder="#alerts"><div class="field-err"></div></div>
+      <div><label>Bot token <span class="hint">(stored in config on a trusted LAN)</span></label>
+        <input name="slack_token" type="password" value="" autocomplete="new-password" placeholder="xoxb-…">
+        <div class="field-err"></div></div>
+    </div>
+  </div>
+
+  <div class="card">
     <h3>Web interface</h3>
     <div class="row">
       <div><label>Bind host <span class="hint">(0.0.0.0 = all, 127.0.0.1 = local only)</span></label>
