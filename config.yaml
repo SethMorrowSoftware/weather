@@ -1,6 +1,8 @@
 # ===========================================================================
-# Weather -> MQTT controller configuration
+# Precipitation -> MQTT controller configuration
 # Data source: National Weather Service (api.weather.gov) -- US only, no key.
+#
+# Purpose: watch rainfall and tell irrigation PLCs when NOT to water.
 # ===========================================================================
 
 # --- Your facility's location ----------------------------------------------
@@ -8,10 +10,15 @@
 location:
   latitude: 41.2459      # <-- set to your facility
   longitude: -74.2735    # <-- set to your facility
+  # Optional: pin a specific NWS observation station (4-letter id, e.g. "KMGJ").
+  # Leave unset to auto-pick the nearest one. Set this if the nearest station
+  # does not report precipitation -- find candidates at:
+  #   https://api.weather.gov/points/<lat>,<lon>/stations
+  # station_id: "KMGJ"
 
 # NWS requires a User-Agent that identifies your app + a real contact, so they
 # can reach you if your polling misbehaves. Put a working email or phone here.
-user_agent: "facility-weather-controller (ops@example.com)"
+user_agent: "facility-irrigation-controller (ops@example.com)"
 
 # How often to poll the weather and re-evaluate rules.
 poll_interval_minutes: 15
@@ -20,6 +27,23 @@ poll_interval_minutes: 15
 # true:            re-publish every rule's current state every cycle (heartbeat).
 # Set true if your broker may restart and you depend on retained values.
 always_publish: false
+
+# --- Precipitation settings ------------------------------------------------
+precipitation:
+  # Rolling window (hours) used to total measured rainfall into the
+  # `precip_accum_in` metric. The irrigation rule below compares against it.
+  lookback_hours: 24
+
+# --- Web interface ---------------------------------------------------------
+# Optional dashboard + config editor (webui.py). Reachable at http://host:port.
+web:
+  enabled: true
+  host: "0.0.0.0"       # 0.0.0.0 = all interfaces; 127.0.0.1 = local only
+  port: 8080
+  # Set both to require a login before viewing/editing. Leave blank only on a
+  # trusted, isolated control network.
+  username: ""
+  password: ""
 
 # --- MQTT broker -----------------------------------------------------------
 mqtt:
@@ -30,23 +54,55 @@ mqtt:
   client_id: "weather-mqtt-controller"
   qos: 1
   retain: true           # broker keeps the last value for new subscribers
+  # Optional: publish a JSON snapshot of all conditions here each cycle
+  # (handy for dashboards / SCADA debugging). Leave "" to disable.
+  status_topic: "irrigation/weather/status"
 
 # --- Rules -----------------------------------------------------------------
-# Each rule watches ONE metric. When the condition becomes true it publishes
-# `on_match` to `topic`; when it goes false again it publishes `on_clear`.
-# Omit `on_clear` if a rule should only ever fire its "on" event.
+# Each rule publishes `on_match` to `topic` when its condition becomes true,
+# and `on_clear` when it becomes false again. Publishing happens only on a
+# state change (unless always_publish: true).
+#
+# A rule's `when` is either ONE condition:
+#     when: { metric: ..., operator: ..., value: ... }
+# or a compound of several, combined with `any` (OR) or `all` (AND):
+#     when:
+#       any:
+#         - { metric: ..., operator: ..., value: ... }
+#         - { metric: ..., operator: ..., value: ... }
 #
 # Available metrics:
+#   is_raining                 precipitating right now (true/false)   [== !=]
+#   precip_accum_in            measured rainfall over lookback_hours, inches
+#   precipitation_probability  FORECAST chance of precip, 0-100 (%)
 #   temperature                current air temp, degF (measured if available)
 #   wind_speed_mph             current wind speed, mph
-#   precipitation_probability  chance of precip, 0-100 (%)
 #   humidity                   relative humidity, 0-100 (%)
-#   short_forecast             text e.g. "Light Snow"   (operators: contains, equals)
-#   active_alert               NWS watches/warnings     (operators: any | contains | equals)
+#   short_forecast             text e.g. "Light Rain"  (operators: contains, equals)
+#   active_alert               NWS watches/warnings    (operators: any | contains | equals)
 #
 # Numeric operators:  <  <=  >  >=  ==  !=
 # ---------------------------------------------------------------------------
 rules:
+  # The main one: don't water if it's raining now OR it has already rained
+  # enough in the last 24h. Publishes a retained directive the PLCs subscribe
+  # to -- "INHIBIT" = hold the valves closed, "ALLOW" = normal watering.
+  - name: irrigation_rain_inhibit
+    description: "Hold irrigation when it is raining or has rained >= 0.25 in / 24h"
+    when:
+      any:
+        - metric: is_raining
+          operator: "=="
+          value: true
+        - metric: precip_accum_in
+          operator: ">="
+          value: 0.25          # inches over lookback_hours; tune to taste
+    topic: "irrigation/rain_inhibit"
+    on_match: "INHIBIT"
+    on_clear: "ALLOW"
+
+  # Optional extra signals you can wire up on the PLC/SCADA side. Delete any
+  # you don't need. (Quote payloads -- unquoted ON/OFF/YES/NO become booleans.)
   - name: freeze_protection
     description: "Energize heat trace / drip faucets below freezing"
     when:
@@ -56,46 +112,6 @@ rules:
     topic: "facility/weather/freeze_protection"
     on_match: "ON"
     on_clear: "OFF"
-
-  - name: cooling
-    description: "Kick on extra cooling in the heat"
-    when:
-      metric: temperature
-      operator: ">="
-      value: 88
-    topic: "facility/weather/cooling"
-    on_match: "ON"
-    on_clear: "OFF"
-
-  - name: secure_for_wind
-    description: "Retract awnings / secure loose equipment in high wind"
-    when:
-      metric: wind_speed_mph
-      operator: ">="
-      value: 30
-    topic: "facility/weather/secure_equipment"
-    on_match: "SECURE"
-    on_clear: "NORMAL"
-
-  - name: close_vents_rain
-    description: "Close roof vents when rain is likely"
-    when:
-      metric: precipitation_probability
-      operator: ">="
-      value: 60
-    topic: "facility/weather/roof_vents"
-    on_match: "CLOSE"
-    on_clear: "OPEN"
-
-  - name: winter_weather_alert
-    description: "React to any active winter-weather alert from NWS"
-    when:
-      metric: active_alert
-      operator: "contains"
-      value: "Winter"
-    topic: "facility/weather/winter_alert"
-    on_match: "ACTIVE"
-    on_clear: "CLEAR"
 
   - name: any_nws_alert
     description: "Generic flag whenever ANY NWS alert is active for our area"

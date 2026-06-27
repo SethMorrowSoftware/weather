@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+# Runtime artifacts written by the monitor / web UI
+nws_location_cache.json
+weather_state.json
+config.yaml.bak
+*.tmp
+venv/
