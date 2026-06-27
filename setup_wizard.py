@@ -135,6 +135,14 @@ slack:
   bot_token: "{c['slack_token']}"
   broker_unreachable_minutes: {c['slack_minutes']}
 
+# --- Remote status page (optional, read-only / outbound only) ---------------
+# Push the status snapshot to an external dashboard each cycle (see
+# cloud-status/). Enable it here or from the web UI's Settings page.
+status_push:
+  enabled: false
+  url: ""
+  token: ""
+
 # --- Rules -----------------------------------------------------------------
 # The first rule is the irrigation inhibit. Tune thresholds here or in the
 # web UI's rule builder. Payloads are sent literally -- quote them.
