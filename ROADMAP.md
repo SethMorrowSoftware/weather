@@ -207,16 +207,102 @@ system "as customizable as possible" without engine changes.
 - **Phase 1 — Engine:** nested `any/all/not`; `between`/`in`/`changed`/`for`; per‑device
   `enabled`; **time windows**; **hysteresis / min‑on / min‑off / cooldown**. *Biggest
   reliability gain for switching real loads.*
+  - **Delivered:** nested `any/all/not`, the `between`/`in` operators, per‑rule
+    `enabled`, **time windows**, **hysteresis (min‑on/min‑off/cooldown)**, and the
+    stateful **`changed`** operator + **`for:` sustain** modifier (engine +
+    validation + tests + docs; back‑compatible). **Phase 1 engine is complete.**
+  - **Builder UI:** the form builder now edits single‑level rules end‑to‑end —
+    `enabled`, `between`/`in`, the `changed` operator, and per‑condition `for:`.
+    Nested/`not`, time windows, and hysteresis remain YAML‑tab only (the Rules
+    page auto‑opens the YAML editor when a rule uses them).
+  - **Still to come (own PRs):** a builder UI for the remaining nested/`not`/
+    window/hysteresis constructs (optional polish). Then **Phase 2** (device
+    model + manual control).
 - **Phase 2 — Devices + manual control:** device/channel model; generalized device‑grid
   dashboard; **manual Auto/On/Off** (opt‑in, persisted, audited) with the security gating
   above. (Actions still MQTT.)
+  - **Delivered:** **manual Auto/On/Off** — `web.allow_manual_control` (fail‑closed,
+    requires a login), per‑device override persisted to `overrides.json` (overlay on
+    config; manual wins and bypasses hysteresis), an append‑only `audit.log` of manual
+    and automatic changes, an authenticated `POST /api/control` endpoint, dashboard
+    Auto/On/Off buttons, and a read‑only "manual" indicator on the cloud status page.
+  - **Delivered (cont.):** an in‑UI **Activity** page (`/activity` + `/api/audit`)
+    that renders the audit log in plain language; a **device‑grid dashboard** (cards
+    with inline Auto/On/Off, a status legend, and a getting‑started empty state);
+    onboarding/inline help; and **branding** as *The Castle Fun Center · MQTT Command
+    Center* across the web UI, demo, and cloud‑status pages.
+  - **Delivered (cont.):** a **System** page (`/system` + `/api/system` + `/api/logs`)
+    — at‑a‑glance health (monitor running/stale, MQTT, config validity, poll
+    freshness), a configuration summary (rule/metric/input counts and files in use),
+    and a **live runtime‑log viewer** with level filtering. The monitor mirrors its
+    log to a rolling `log_file` (default `monitor.log`) so the separate web‑UI process
+    can tail it. Mirrored in the static demo.
+  - **Delivered (cont.):** a live **MQTT console** (`/mqtt` + `/api/mqtt` +
+    `/api/mqtt/publish`) — the web UI keeps its own broker subscription and shows a
+    live message feed (topic‑prefix filter) and a per‑topic latest‑value view, plus a
+    **manual publish console** (topic/payload/QoS/retain). Publishing is fail‑closed
+    (`web.allow_mqtt_publish` + a login required) and audited; the subscription is
+    configurable (`mqtt_console_enabled`/`_topics`/`_buffer`). Mirrored in the demo.
+  - Phase 2 is complete.
 - **Phase 3 — Inputs:** `schedule`, `manual` variables, `mqtt_in` sensors, `http_poll`;
   dynamic metric discovery in the builder; optional event‑driven re‑eval on MQTT input.
-- **Phase 4 — History (optional, low priority):** SQLite event log + simple trends;
-  persisted overrides move into the store.
+  - **Delivered:** **schedule/clock metrics** (`time_hour`, `time_minute`,
+    `time_weekday`, `time_is_weekend`); **operator‑set `variables`** (bool/number
+    flags declared in config, toggled from the dashboard, persisted to
+    `variables.json`, audited) surfaced as `var_<name>` metrics; and **dynamic metric
+    discovery** — the builder dropdowns now include declared variables live.
+  - **Delivered (cont.):** **`mqtt_in` sensors** — `mqtt_inputs:` subscribes on the
+    existing broker connection and exposes each payload (`number`/`bool`/`string`) as
+    a rule metric, discovered by the builder; unavailable until first message
+    (fail‑safe hold).
+  - **Delivered (cont.):** **`http_poll`** — `http_inputs:` GETs a JSON endpoint on
+    an interval and maps fields (dotted path) to typed metrics, discovered by the
+    builder; best‑effort with fail‑safe hold.
+  - **Delivered (cont.):** **`time_is_daytime`** — a dependency‑free sunrise/sunset
+    flag from the site lat/long (handles polar day/night). **Phase 3 input sources
+    are complete.**
+  - **Delivered (cont.):** a web **Inputs editor** (`/inputs`) — manage operator
+    variables, `mqtt_in` sensors, and `http_poll` inputs from the UI (add/remove
+    rows, typed defaults/parsing, dotted‑path field mappings) instead of
+    hand‑editing `config.yaml`; saved through the monitor's own validator
+    (name‑collision checks, clear errors) so new metrics appear in the Rules
+    builder immediately. Mirrored in the static demo.
+  - **Delivered (cont.):** **richer conditionals** — compare a metric to *another*
+    metric's live value (`value_metric`, with `< <= > >= == !=`); a `regex`
+    operator for text metrics and NWS alerts; and **computed (derived) metrics**
+    (a `computed:` section with a safe arithmetic expression — `+ - * / // % **` —
+    over earlier metrics, evaluated fail‑safe). All discovered by the builder,
+    editable in the UI (value_metric in the form builder, computed on the Inputs
+    page), and mirrored in the demo.
+  - **Delivered (cont.):** **event‑driven re‑evaluation** (`event_driven`, default
+    on) — an incoming `mqtt_in` message that changes a value wakes the loop for an
+    immediate re‑eval instead of waiting for the next poll. The slow NWS fetch
+    stays on `poll_interval_minutes` (cached weather is reused in between), bursts
+    are debounced, and the outbound status push stays at poll cadence. Toggle in
+    Settings. **Phase 3 is complete.**
+- **Action layer — multiple action types (delivered):** beyond the built‑in
+  `on_match`/`on_clear` publish, a rule may declare an `actions:` list that fires
+  on a transition (`trigger: match | clear | both`). Three kinds: **mqtt** (extra
+  publish), **webhook** (HTTP GET/POST/PUT, outbound best‑effort), and **notify**
+  (Slack). Payloads/URLs/bodies/text support **`{{metric}}` templating** with live
+  values. Validated, fail‑safe (a failed action never blocks the cycle or changes
+  committed state), editable in the form builder's *Extra actions* section, and
+  mirrored in the demo. Each firing is **audited** (kind/target/trigger/ok) and
+  surfaced on the **Activity** page, so you can see what fired and whether it
+  succeeded. (This delivers the ROADMAP's pluggable action registry — webhooks
+  are no longer out of scope.)
+- **Phase 4 — History & trends (delivered):** the monitor records each cycle's
+  numeric metrics to a small **SQLite** file (`history.db`), pruned to
+  `history.retention_days`. A new **History** page charts per‑metric **trend
+  sparklines** over a selectable window (6h…30d) via `/api/history`; toggle it and
+  set retention under *Settings → Metric history*. Recording is best‑effort (never
+  blocks the cycle) and the page degrades gracefully when disabled/empty. Mirrored
+  in the demo.
+  - **Optional remaining:** persisted overrides could move into the same store;
+    event‑log/longer‑term aggregation is a future nicety.
 
 Phases 0–2 already deliver "control anything on/off, fully customizable, with manual
-override"; Phase 3 adds the rich inputs; Phase 4 is the nice‑to‑have.
+override"; Phase 3 adds the rich inputs; Phase 4 adds history/trends.
 
 ---
 

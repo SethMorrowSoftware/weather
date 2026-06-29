@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark light">
+<title>Inputs · The Castle Fun Center</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%8F%B0%3C/text%3E%3C/svg%3E">
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+<div class="banner">📦 <b>Static demo</b> — add/remove rows and Save to see the flow, but nothing is written. The live app saves to <code>config.yaml</code>.</div>
+<header>
+  <h1><span class="logo">🏰</span> The Castle Fun Center <span style="font-weight:500;color:var(--muted2);font-size:12px;letter-spacing:.02em">· MQTT Command Center</span></h1>
+  <nav>
+    <a href="index.html">Dashboard</a>
+    <a href="settings.html">Settings</a>
+    <a href="rules.html">Rules</a>
+    <a href="inputs.html" class="active">Inputs</a>
+    <a href="mqtt.html">MQTT</a>
+    <a href="activity.html">Activity</a>
+    <a href="history.html">History</a>
+    <a href="system.html">System</a>
+  </nav>
+  <span class="spacer"></span>
+  <span class="conn"><span class="dot up"></span>MQTT connected</span>
+</header>
+
+<main>
+<form id="inputs-form">
+  <div class="card">
+    <h3 style="margin:0 0 4px">Inputs (sources)</h3>
+    <p class="muted" style="margin:0 0 6px">Add the signals your rules can use. Each one becomes a
+     <b>metric</b> the rule builder discovers automatically. In the live app these are saved to
+     <code>config.yaml</code> and validated before writing; new metrics apply on the next poll
+     (mqtt/http connections re-read at the next cycle, a new topic subscription needs a service restart).</p>
+  </div>
+
+  <div class="card">
+    <div class="toprow"><h3 style="margin:0">Operator variables</h3>
+      <button type="button" class="secondary mini" id="add-var" style="margin:0">+ Add variable</button></div>
+    <p class="muted" style="margin:6px 0 0">Virtual flags/setpoints you toggle from the dashboard
+     (metric <code>var_&lt;name&gt;</code>). Type <b>bool</b> or <b>number</b>.</p>
+    <div id="vars" style="margin-top:10px"></div>
+  </div>
+
+  <div class="card">
+    <div class="toprow"><h3 style="margin:0">MQTT sensor inputs</h3>
+      <button type="button" class="secondary mini" id="add-mqtt" style="margin:0">+ Add MQTT input</button></div>
+    <p class="muted" style="margin:6px 0 0">Subscribe to another device's topic and expose its payload as a
+     metric (<b>number</b>/<b>bool</b>/<b>string</b>).</p>
+    <div id="mqtts" style="margin-top:10px"></div>
+  </div>
+
+  <div class="card">
+    <div class="toprow"><h3 style="margin:0">HTTP JSON inputs</h3>
+      <button type="button" class="secondary mini" id="add-http" style="margin:0">+ Add HTTP input</button></div>
+    <p class="muted" style="margin:6px 0 0">Poll a JSON endpoint and map fields (dotted path, arrays by
+     index) to metrics.</p>
+    <div id="https" style="margin-top:10px"></div>
+  </div>
+
+  <div class="card">
+    <div class="toprow"><h3 style="margin:0">Computed metrics</h3>
+      <button type="button" class="secondary mini" id="add-comp" style="margin:0">+ Add computed</button></div>
+    <p class="muted" style="margin:6px 0 0">Derive a new <b>number</b> metric from others with a small
+     formula: <code>+ - * / // % **</code> and parentheses over any metric defined <i>above</i> it. E.g.
+     <code>power_kw - solar_kw</code>. A missing input yields no value (rules hold, fail-safe).</p>
+    <div id="comps" style="margin-top:10px"></div>
+    <div class="field-err" id="inputs-err" style="margin-top:10px"></div>
+    <button type="submit" id="save-inputs">Save inputs</button>
+  </div>
+</form>
+</main>
+
+<footer>The Castle Fun Center · MQTT Command Center · demo build · <a href="https://github.com/SethMorrowSoftware/mqtt-dev" target="_blank" rel="noopener">Docs ↗</a></footer>
+<div id="toast"></div>
+<script>
+/* Sample sources for the demo Inputs editor (mirrors a populated config.yaml). */
+window.DEMO_SOURCES = {
+  variables: [
+    { name: "maintenance_mode", type: "bool",   default: "false" },
+    { name: "temp_setpoint",    type: "number", default: 70 },
+  ],
+  mqtt_inputs: [
+    { topic: "sensors/tank/level", metric: "tank_level", parse: "number" },
+    { topic: "sensors/solar/kw",   metric: "solar_kw",   parse: "number" },
+  ],
+  http_inputs: [
+    { url: "https://meter.local/api", interval_minutes: 5, timeout: 10,
+      map: [{ metric: "power_kw", path: "data.current_kw", type: "number" }] },
+  ],
+  computed: [
+    { name: "net_power", expr: "power_kw - solar_kw" },
+  ],
+};
+</script>
+<script src="assets/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark light">
+<title>System · The Castle Fun Center</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%8F%B0%3C/text%3E%3C/svg%3E">
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+<div class="banner">📦 <b>Static demo</b> — sample health and log lines, nothing is live. The live app reads <code>weather_state.json</code> and tails <code>monitor.log</code>.</div>
+<header>
+  <h1><span class="logo">🏰</span> The Castle Fun Center <span style="font-weight:500;color:var(--muted2);font-size:12px;letter-spacing:.02em">· MQTT Command Center</span></h1>
+  <nav>
+    <a href="index.html">Dashboard</a>
+    <a href="settings.html">Settings</a>
+    <a href="rules.html">Rules</a>
+    <a href="inputs.html">Inputs</a>
+    <a href="mqtt.html">MQTT</a>
+    <a href="activity.html">Activity</a>
+    <a href="history.html">History</a>
+    <a href="system.html" class="active">System</a>
+  </nav>
+  <span class="spacer"></span>
+  <span class="conn"><span class="dot up"></span>MQTT connected</span>
+</header>
+
+<main>
+<div class="card">
+  <div class="toprow" style="align-items:center">
+    <div><h3 style="margin:0">System</h3>
+      <p class="muted" style="margin:4px 0 0">Live health of the monitor and web UI, a snapshot of your
+       configuration, and the controller's runtime log.</p></div>
+    <span class="conn" id="sys-conn"><span class="dot idle"></span>checking…</span>
+  </div>
+  <div class="grid" id="health" style="grid-template-columns:repeat(auto-fill,minmax(200px,1fr));margin-top:14px">
+    <div class="metric"><div class="v" id="h_monitor">—</div><div class="k">monitor</div></div>
+    <div class="metric"><div class="v" id="h_mqtt">—</div><div class="k">MQTT broker</div></div>
+    <div class="metric"><div class="v" id="h_config">—</div><div class="k">config</div></div>
+    <div class="metric"><div class="v" id="h_update">—</div><div class="k">last poll</div></div>
+  </div>
+</div>
+
+<div class="card">
+  <div class="eyebrow" style="margin-bottom:10px">Configuration summary</div>
+  <div class="grid" id="summary" style="grid-template-columns:repeat(auto-fill,minmax(150px,1fr))">
+    <div class="metric"><div class="v" id="s_rules">—</div><div class="k">rules (enabled)</div></div>
+    <div class="metric"><div class="v" id="s_metrics">—</div><div class="k">metrics available</div></div>
+    <div class="metric"><div class="v" id="s_vars">—</div><div class="k">variables</div></div>
+    <div class="metric"><div class="v" id="s_mqtt">—</div><div class="k">MQTT inputs</div></div>
+    <div class="metric"><div class="v" id="s_http">—</div><div class="k">HTTP inputs</div></div>
+  </div>
+  <p class="muted" id="files" style="margin-top:14px">—</p>
+</div>
+
+<div class="card">
+  <div class="toprow" style="align-items:center">
+    <div><h3 style="margin:0">Runtime log</h3>
+      <p class="muted" style="margin:4px 0 0">The monitor's recent log, newest first.</p></div>
+    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+      <select id="lvl" style="margin:0;width:auto">
+        <option value="">all levels</option>
+        <option value="INFO">info &amp; up</option>
+        <option value="WARNING">warnings &amp; up</option>
+        <option value="ERROR">errors only</option>
+      </select>
+      <label class="muted" style="margin:0;display:flex;align-items:center;gap:6px;font-weight:500">
+        <input type="checkbox" id="follow" checked style="width:auto;margin:0"> auto-refresh</label>
+    </div>
+  </div>
+  <pre id="logbox" style="margin-top:12px;max-height:460px;overflow:auto;background:#0a1322;border:1px solid var(--line);border-radius:10px;padding:14px 16px;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12.5px;line-height:1.6;white-space:pre-wrap;word-break:break-word">Loading…</pre>
+  <p class="muted" style="margin-top:10px">In the live app this tails <code>monitor.log</code> (rolls at ~1 MB);
+   here it's a fixed sample.</p>
+</div>
+</main>
+
+<footer>The Castle Fun Center · MQTT Command Center · demo build · <a href="https://github.com/SethMorrowSoftware/mqtt-dev" target="_blank" rel="noopener">Docs ↗</a></footer>
+<div id="toast"></div>
+<script src="assets/app.js"></script>
+</body>
+</html>

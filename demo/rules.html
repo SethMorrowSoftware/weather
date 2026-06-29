@@ -4,18 +4,23 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="dark light">
-<title>Rules · Precipitation → MQTT</title>
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%8C%A7%3C/text%3E%3C/svg%3E">
+<title>Rules · The Castle Fun Center</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%8F%B0%3C/text%3E%3C/svg%3E">
 <link rel="stylesheet" href="assets/style.css">
 </head>
 <body>
 <div class="banner">📦 <b>Static demo</b> — the editor validates YAML in your browser but does not save anything.</div>
 <header>
-  <h1><span class="logo">🌧</span> Precipitation → MQTT</h1>
+  <h1><span class="logo">🏰</span> The Castle Fun Center <span style="font-weight:500;color:var(--muted2);font-size:12px;letter-spacing:.02em">· MQTT Command Center</span></h1>
   <nav>
     <a href="index.html">Dashboard</a>
     <a href="settings.html">Settings</a>
     <a href="rules.html" class="active">Rules</a>
+    <a href="inputs.html">Inputs</a>
+    <a href="mqtt.html">MQTT</a>
+    <a href="activity.html">Activity</a>
+    <a href="history.html">History</a>
+    <a href="system.html">System</a>
   </nav>
   <span class="spacer"></span>
   <span class="conn"><span class="dot up"></span>MQTT connected</span>
@@ -26,9 +31,11 @@
   <input type="hidden" id="mode" value="form">
   <div class="card">
     <h3>Rules</h3>
-    <p class="muted">The first rule controls irrigation. Each rule publishes its <code>on_match</code> payload
-      to its topic when its condition becomes true, and <code>on_clear</code> when it clears. Build rules with
-      the form, or edit the raw YAML directly — both are validated before saving.</p>
+    <p class="muted">Each rule (device) publishes its <code>on_match</code> payload to its topic when its
+      condition becomes true, and <code>on_clear</code> when it clears. Build rules with the form — including
+      <code>between</code>/<code>in</code>/<code>changed</code>, a per-condition <code>for</code>, and the
+      <code>enabled</code> toggle — or edit the raw YAML directly (nested <code>any/all/not</code>, time
+      windows and hysteresis live there). Both are validated before saving.</p>
 
     <div class="tabs">
       <button type="button" class="tab" data-tab="form">Form builder</button>
@@ -58,14 +65,28 @@
   on_match: "INHIBIT"
   on_clear: "ALLOW"
 
-- name: any_nws_alert
-  description: "Flag whenever any NWS alert is active"
+- name: vent_fan
+  description: "Run the fan when hot during daylight (sustained 10 min)"
+  enabled: true
   when:
-    metric: active_alert
-    operator: "any"
-  topic: "facility/weather/nws_alert"
-  on_match: "1"
-  on_clear: "0"</textarea>
+    all:
+      - { metric: temperature, operator: "between", value: [85, 110], for: "10m" }
+      - { metric: time_is_daytime, operator: "==", value: true }
+  window: { from: "06:00", to: "20:00", days: [mon, tue, wed, thu, fri] }
+  hysteresis: { min_on: 10m, min_off: 5m }
+  topic: "facility/vent_fan"
+  on_match: "ON"
+  on_clear: "OFF"
+
+- name: maintenance_hold
+  description: "Pause everything while in maintenance mode"
+  when:
+    metric: var_maintenance_mode
+    operator: "=="
+    value: true
+  topic: "facility/maintenance"
+  on_match: "ON"
+  on_clear: "OFF"</textarea>
     <div class="field-err" id="rules-err"></div>
     <div class="btnrow">
       <button type="submit" id="save-yaml">Save rules</button>
@@ -79,33 +100,51 @@
       <table style="margin-top:10px">
         <thead><tr><th>Metric</th><th>Meaning</th><th>Operators</th></tr></thead>
         <tbody>
-          <tr><td><code>is_raining</code></td><td>precipitating right now</td><td><code>== !=</code></td></tr>
-          <tr><td><code>precip_accum_in</code></td><td>measured rain over lookback (in)</td><td><code>&lt; &lt;= &gt; &gt;= == !=</code></td></tr>
-          <tr><td><code>precipitation_probability</code></td><td>forecast chance (%)</td><td><code>&lt; &lt;= &gt; &gt;= == !=</code></td></tr>
-          <tr><td><code>temperature</code></td><td>air temp (°F)</td><td><code>&lt; &lt;= &gt; &gt;= == !=</code></td></tr>
-          <tr><td><code>wind_speed_mph</code></td><td>wind speed (mph)</td><td><code>&lt; &lt;= &gt; &gt;= == !=</code></td></tr>
-          <tr><td><code>humidity</code></td><td>relative humidity (%)</td><td><code>&lt; &lt;= &gt; &gt;= == !=</code></td></tr>
-          <tr><td><code>short_forecast</code></td><td>text e.g. "Light Rain"</td><td><code>contains equals</code></td></tr>
+          <tr><td><code>is_raining</code></td><td>precipitating right now</td><td><code>== != changed</code></td></tr>
+          <tr><td><code>precip_accum_in</code></td><td>measured rain over lookback (in)</td><td><code>&lt; &lt;= &gt; &gt;= == != between in changed</code></td></tr>
+          <tr><td><code>precipitation_probability</code></td><td>forecast chance (%)</td><td><code>&lt; &lt;= &gt; &gt;= == != between in changed</code></td></tr>
+          <tr><td><code>temperature</code></td><td>air temp (°F)</td><td><code>&lt; &lt;= &gt; &gt;= == != between in changed</code></td></tr>
+          <tr><td><code>wind_speed_mph</code></td><td>wind speed (mph)</td><td><code>&lt; &lt;= &gt; &gt;= == != between in changed</code></td></tr>
+          <tr><td><code>humidity</code></td><td>relative humidity (%)</td><td><code>&lt; &lt;= &gt; &gt;= == != between in changed</code></td></tr>
+          <tr><td><code>short_forecast</code></td><td>text e.g. "Light Rain"</td><td><code>contains equals in changed</code></td></tr>
           <tr><td><code>active_alert</code></td><td>NWS watches/warnings</td><td><code>any contains equals</code></td></tr>
+          <tr><td><code>time_hour</code> / <code>time_minute</code></td><td>local clock (0–23 / 0–59)</td><td><code>&lt; &lt;= &gt; &gt;= == != between in changed</code></td></tr>
+          <tr><td><code>time_weekday</code></td><td>mon…sun (local)</td><td><code>equals in contains changed</code></td></tr>
+          <tr><td><code>time_is_weekend</code> / <code>time_is_daytime</code></td><td>true/false (sun up at site)</td><td><code>== != changed</code></td></tr>
+          <tr><td><code>var_*</code></td><td>operator variables (declared in config)</td><td><em>by type</em></td></tr>
+          <tr><td><code>tank_level</code>, <code>power_kw</code>, …</td><td>mqtt_in / http_poll inputs</td><td><em>by type</em></td></tr>
         </tbody>
       </table>
+      <p class="muted" style="margin-top:8px"><code>between</code> takes a
+       <code>low, high</code> pair; <code>in</code> a comma-separated list;
+       <code>changed</code> fires when a value moves. The per-condition <b>for</b>
+       box requires it to hold that long (e.g. <code>10m</code>). Variables and
+       <code>mqtt_in</code>/<code>http_poll</code> inputs appear in the dropdowns
+       automatically. Nested groups, <code>not</code>, time windows and hysteresis
+       are edited in the YAML tab.</p>
     </details>
   </div>
 </form>
 </main>
 
-<footer>Precipitation → MQTT controller · demo build</footer>
+<footer>The Castle Fun Center · MQTT Command Center · demo build · <a href="https://github.com/SethMorrowSoftware/mqtt-dev" target="_blank" rel="noopener">Docs ↗</a></footer>
 <div id="toast"></div>
 <script>
 /* Starting rules for the demo builder (mirrors the textarea above). */
 window.DEMO_RULES = [
   {name:"irrigation_rain_inhibit", description:"Hold irrigation when raining or >= 0.25 in / 24h",
-   topic:"irrigation/rain_inhibit", on_match:"INHIBIT", on_clear:"ALLOW", combine:"any",
+   topic:"irrigation/rain_inhibit", on_match:"INHIBIT", on_clear:"ALLOW", enabled:true, combine:"any",
    conditions:[{metric:"is_raining",operator:"==",value:"true"},
                {metric:"precip_accum_in",operator:">=",value:"0.25"}]},
-  {name:"any_nws_alert", description:"Flag whenever any NWS alert is active",
-   topic:"facility/weather/nws_alert", on_match:"1", on_clear:"0", combine:"any",
-   conditions:[{metric:"active_alert",operator:"any",value:""}]},
+  {name:"vent_fan", description:"Run the fan when hot during daylight (sustained 10 min)",
+   topic:"facility/vent_fan", on_match:"ON", on_clear:"OFF", enabled:true, combine:"all",
+   conditions:[{metric:"temperature",operator:"between",value:"85, 110",for:"10m"},
+               {metric:"time_is_daytime",operator:"==",value:"true"}],
+   actions:[{kind:"notify",on:"match",text:"Vent fan ON — {{temperature}}°F"},
+            {kind:"webhook",on:"both",url:"https://hooks.example.com/vent",method:"POST",body:'{"temp": {{temperature}}}'}]},
+  {name:"maintenance_hold", description:"Pause everything while in maintenance mode",
+   topic:"facility/maintenance", on_match:"ON", on_clear:"OFF", enabled:true, combine:"any",
+   conditions:[{metric:"var_maintenance_mode",operator:"==",value:"true"}]},
 ];
 </script>
 <script src="assets/app.js"></script>

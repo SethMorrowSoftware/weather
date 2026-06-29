@@ -5,6 +5,10 @@
 # Purpose: watch rainfall and tell irrigation PLCs when NOT to water.
 # ===========================================================================
 
+# Config schema version. Leave at 1; a future "Conditions -> Actions" schema
+# (see ROADMAP.md) will introduce version 2 with an automatic migration.
+version: 1
+
 # --- Your facility's location ----------------------------------------------
 # Decimal degrees. REPLACE THESE with your actual coordinates.
 location:
@@ -28,6 +32,38 @@ poll_interval_minutes: 15
 # Set true if your broker may restart and you depend on retained values.
 always_publish: false
 
+# Event-driven re-evaluation (default true): re-run the rules the instant an
+# mqtt_in sensor message changes a value, instead of waiting for the next poll.
+# The slow NWS weather fetch still runs on poll_interval_minutes; only rule
+# evaluation is woken (debounced). Set false for strict poll-cadence behavior.
+event_driven: true
+
+# --- Operator variables (optional) -----------------------------------------
+# Virtual flags/setpoints you can toggle from the dashboard (when manual control
+# is enabled). Each becomes a metric named var_<name> that rules can reference,
+# e.g. var_maintenance_mode. Types: bool or number. Runtime values persist in
+# variables.json. Uncomment to use:
+# variables:
+#   maintenance_mode: { type: bool, default: false }
+#   temp_setpoint:    { type: number, default: 70 }
+
+# --- MQTT sensor inputs (optional) -----------------------------------------
+# Subscribe to other devices' topics on the same broker and expose each payload
+# as a rule metric. parse: number | bool | string. Uncomment to use:
+# mqtt_inputs:
+#   - { topic: "sensors/tank/level", metric: tank_level, parse: number }
+#   - { topic: "sensors/door/open",  metric: door_open,  parse: bool }
+
+# --- HTTP JSON inputs (optional) -------------------------------------------
+# Poll a JSON endpoint and map fields (dotted path; arrays by index) to metrics.
+# type: number | bool | string. Uncomment to use:
+# http_inputs:
+#   - url: "https://meter.local/api"
+#     interval_minutes: 5
+#     map:
+#       - { metric: power_kw, path: "current_kw",    type: number }
+#       - { metric: grid_up,  path: "status.online", type: bool }
+
 # --- Precipitation settings ------------------------------------------------
 precipitation:
   # Rolling window (hours) used to total measured rainfall into the
@@ -44,6 +80,17 @@ web:
   # trusted, isolated control network.
   username: ""
   password: ""
+  # Allow forcing devices On/Off from the dashboard (Auto/On/Off buttons).
+  # Default false = display-only. Fail-closed: only works when a login is set.
+  # Overrides persist in overrides.json; changes are written to audit.log.
+  allow_manual_control: false
+  # Allow sending arbitrary messages from the MQTT console (MQTT page).
+  # Default false = the live feed is read-only. Fail-closed like the above.
+  allow_mqtt_publish: false
+  # The MQTT console subscribes so the web UI can show a live message feed:
+  # mqtt_console_enabled: true            # set false to disable the subscription
+  # mqtt_console_topics: ["#"]            # topics to watch (default: everything)
+  # mqtt_console_buffer: 500              # max recent messages kept in memory
 
 # --- MQTT broker -----------------------------------------------------------
 mqtt:
@@ -57,6 +104,18 @@ mqtt:
   # Optional: publish a JSON snapshot of all conditions here each cycle
   # (handy for dashboards / SCADA debugging). Leave "" to disable.
   status_topic: "irrigation/weather/status"
+  # Retained online/offline availability topic + MQTT Last Will. The controller
+  # publishes "online" on connect and (via the LWT) "offline" if it dies
+  # unexpectedly, so subscribers can tell "controller alive" from "controller
+  # gone" instead of trusting a stale retained directive forever. "" disables it.
+  availability_topic: "weather-mqtt/status"
+  # Optional TLS for the broker connection. Omit/disable for plaintext (default).
+  # tls:
+  #   enabled: true
+  #   ca_certs: "/etc/ssl/certs/ca.pem"   # verify the broker against this CA
+  #   certfile: ""                        # optional client cert (mutual TLS)
+  #   keyfile: ""
+  #   insecure: false                     # true skips verification (testing only)
 
 # --- Slack alerts (optional) -----------------------------------------------
 # Post to Slack if the MQTT broker stays unreachable past the threshold (and an
@@ -68,6 +127,7 @@ slack:
   channel: ""                       # "#alerts" or a channel ID like "C0123456"
   bot_token: ""                     # or set SLACK_BOT_TOKEN in the environment
   broker_unreachable_minutes: 60    # alert after the broker is down this long
+  stale_weather_minutes: 0          # alert after NWS weather is unusable this long (0 = off)
 
 # --- Remote status page (optional, read-only) ------------------------------
 # Push a copy of the status snapshot to an external dashboard each cycle. This
@@ -79,6 +139,15 @@ status_push:
   url: ""        # e.g. https://dashboards.example.com/weather/ingest.php
   token: ""      # shared secret; must match the token in ingest.php
 
+# --- Metric history (optional) ---------------------------------------------
+# Record each cycle's numeric metrics to a small SQLite file so the web UI's
+# History page can chart trends. Pruned to retention_days. Set enabled: false
+# to turn it off (the History page then shows an empty state).
+history:
+  enabled: true
+  file: "history.db"
+  retention_days: 14
+
 # --- Rules -----------------------------------------------------------------
 # Each rule publishes `on_match` to `topic` when its condition becomes true,
 # and `on_clear` when it becomes false again. Publishing happens only on a
@@ -86,11 +155,24 @@ status_push:
 #
 # A rule's `when` is either ONE condition:
 #     when: { metric: ..., operator: ..., value: ... }
-# or a compound of several, combined with `any` (OR) or `all` (AND):
+# or a compound of several, combined with `any` (OR) or `all` (AND). Those
+# groups can be NESTED and negated with `not` to any depth:
 #     when:
-#       any:
-#         - { metric: ..., operator: ..., value: ... }
-#         - { metric: ..., operator: ..., value: ... }
+#       all:
+#         - not: { metric: temperature, operator: "<", value: 32 }
+#         - any:
+#             - { metric: is_raining, operator: "==", value: true }
+#             - { metric: wind_speed_mph, operator: "between", value: [20, 60] }
+#
+# Each rule may also set `enabled: false` to leave it idle (not evaluated, no
+# publishing -- the broker's last retained value stands).
+#
+# Optional per-rule gating for driving real loads (pumps/valves/fans):
+#   window:     { from: "06:00", to: "20:00", days: [mon,tue,wed,thu,fri] }
+#               outside the window the desired state is forced OFF ('to' is
+#               exclusive; from > to wraps past midnight; days defaults to all).
+#   hysteresis: { min_on: 10m, min_off: 5m, cooldown: 0m }
+#               anti-short-cycle timers (accept 30s / 10m / 2h / bare minutes).
 #
 # Available metrics:
 #   is_raining                 precipitating right now (true/false)   [== !=]
@@ -99,10 +181,40 @@ status_push:
 #   temperature                current air temp, degF (measured if available)
 #   wind_speed_mph             current wind speed, mph
 #   humidity                   relative humidity, 0-100 (%)
-#   short_forecast             text e.g. "Light Rain"  (operators: contains, equals)
+#   short_forecast             text e.g. "Light Rain"  (operators: contains, equals, in)
 #   active_alert               NWS watches/warnings    (operators: any | contains | equals)
+#   time_hour / time_minute    local clock, numbers (0-23 / 0-59)
+#   time_weekday               mon..sun (local)        (operators: equals, in, contains)
+#   time_is_weekend            Sat/Sun (true/false)    [== !=]
+#   time_is_daytime            sun up at your lat/long (true/false)  [== !=]
 #
-# Numeric operators:  <  <=  >  >=  ==  !=
+# Numeric operators:  <  <=  >  >=  ==  !=  between  in
+#   between -> inclusive [low, high] pair;   in -> list of allowed values
+# Text operators:  contains  equals  in  regex   (regex is case-insensitive)
+#
+# Compare two metrics: use value_metric instead of value (number/bool, with
+#   < <= > >= == !=), e.g. { metric: tank_level, operator: "<", value_metric: var_setpoint }
+#
+# History-aware (any metric):
+#   operator: changed   -> true the cycle a metric's value changes (no value)
+#   for: <duration>      -> condition must hold continuously this long, e.g.
+#                           { metric: temperature, operator: ">", value: 85, for: "10m" }
+#
+# Computed metrics (optional): derive new number metrics from a formula over
+# others (+ - * / // % ** and parentheses). Each becomes a usable metric; refs
+# must be defined above it. A missing input yields no value (rules hold).
+# computed:
+#   net_power:  { expr: "power_kw - solar_kw" }
+#   temp_delta: { expr: "temperature - var_temp_setpoint" }
+#
+# Extra actions (optional, per rule): besides on_match/on_clear, fire more things
+# on a transition. Use `trigger` (match|clear|both) -- NOT `on` (a YAML boolean).
+# Payloads/urls/bodies/text support {{metric}} templating. Best-effort.
+#   actions:
+#     - { trigger: match, mqtt: { topic: "facility/fan", payload: "RUN {{temperature}}" } }
+#     - { trigger: both,  webhook: { url: "https://hooks.example.com/x", method: POST,
+#                                    body: '{"temp": {{temperature}}}' } }
+#     - { trigger: clear, notify: { text: "cleared at {{temperature}}F" } }
 # ---------------------------------------------------------------------------
 rules:
   # The main one: don't water if it's raining now OR it has already rained

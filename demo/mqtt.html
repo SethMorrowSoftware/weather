@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark light">
+<title>MQTT · The Castle Fun Center</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%8F%B0%3C/text%3E%3C/svg%3E">
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+<div class="banner">📦 <b>Static demo</b> — the feed is simulated and Publish only shows a toast; nothing reaches a real broker.</div>
+<header>
+  <h1><span class="logo">🏰</span> The Castle Fun Center <span style="font-weight:500;color:var(--muted2);font-size:12px;letter-spacing:.02em">· MQTT Command Center</span></h1>
+  <nav>
+    <a href="index.html">Dashboard</a>
+    <a href="settings.html">Settings</a>
+    <a href="rules.html">Rules</a>
+    <a href="inputs.html">Inputs</a>
+    <a href="mqtt.html" class="active">MQTT</a>
+    <a href="activity.html">Activity</a>
+    <a href="history.html">History</a>
+    <a href="system.html">System</a>
+  </nav>
+  <span class="spacer"></span>
+  <span class="conn"><span class="dot up"></span>MQTT connected</span>
+</header>
+
+<main>
+<div class="card">
+  <div class="toprow" style="align-items:center">
+    <div><h3 style="margin:0">MQTT console</h3>
+      <p class="muted" style="margin:4px 0 0">Live view of broker traffic and a manual publish console.
+       The web UI keeps its own subscription so you can watch any topic and send test messages.</p></div>
+    <span class="conn" id="mq-conn"><span class="dot idle"></span>connecting…</span>
+  </div>
+</div>
+
+<div class="card">
+  <div class="tabs">
+    <button type="button" class="tab" data-tab="feed">Live feed</button>
+    <button type="button" class="tab" data-tab="topics">Topics</button>
+  </div>
+
+  <div id="tab-feed" class="tabpane">
+    <div class="row" style="align-items:flex-end">
+      <div style="flex:1"><label style="margin-top:0">Topic filter <span class="hint">(prefix, e.g. sensors/)</span></label>
+        <input id="filter" placeholder="(all topics)"></div>
+      <div style="flex:0 0 auto"><label class="muted" style="margin:0 0 8px;display:flex;align-items:center;gap:6px;font-weight:500">
+        <input type="checkbox" id="follow" checked style="width:auto;margin:0"> auto-refresh</label></div>
+      <div style="flex:0 0 auto"><button type="button" class="secondary mini" id="clear" style="margin:0 0 6px">Clear view</button></div>
+    </div>
+    <div class="table-wrap" style="margin-top:10px">
+      <table>
+        <thead><tr><th style="width:90px">When</th><th>Topic</th><th style="width:70px">Flags</th><th>Payload</th></tr></thead>
+        <tbody id="feedbody"><tr><td colspan="4" class="muted">Waiting for messages…</td></tr></tbody>
+      </table>
+    </div>
+    <p class="muted" id="feednote" style="margin-top:10px">—</p>
+  </div>
+
+  <div id="tab-topics" class="tabpane" style="display:none">
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Topic</th><th style="width:70px">Msgs</th><th style="width:90px">Updated</th><th>Latest payload</th></tr></thead>
+        <tbody id="topicsbody"><tr><td colspan="4" class="muted">No topics seen yet…</td></tr></tbody>
+      </table>
+    </div>
+    <p class="muted" style="margin-top:10px">The most recent value retained per topic.</p>
+  </div>
+</div>
+
+<div class="card" id="pub-card">
+  <h3 style="margin:0 0 4px">Publish a message</h3>
+  <div id="pub-form">
+    <div class="row">
+      <div style="flex:2"><label>Topic</label><input id="p-topic" placeholder="facility/cmd/relay1"></div>
+      <div style="flex:0 0 110px"><label>QoS</label>
+        <select id="p-qos"><option>0</option><option>1</option><option>2</option></select></div>
+      <div style="flex:0 0 auto"><label class="muted" style="display:flex;align-items:center;gap:6px;margin:14px 0 6px;font-weight:500">
+        <input type="checkbox" id="p-retain" style="width:auto;margin:0"> retain</label></div>
+    </div>
+    <label>Payload</label>
+    <textarea id="p-payload" style="min-height:90px" placeholder="ON  (or any string / JSON)"></textarea>
+    <div class="field-err" id="p-err"></div>
+    <button type="button" id="p-send">Publish</button>
+    <p class="muted" style="margin-top:10px">⚠ In the live app messages go straight to the broker (LAN-only, authenticated, audited).
+     Wildcards (<code>#</code> <code>+</code>) are not allowed in a publish topic. (Demo: publish only shows a toast.)</p>
+  </div>
+</div>
+</main>
+
+<footer>The Castle Fun Center · MQTT Command Center · demo build · <a href="https://github.com/SethMorrowSoftware/mqtt-dev" target="_blank" rel="noopener">Docs ↗</a></footer>
+<div id="toast"></div>
+<script src="assets/app.js"></script>
+</body>
+</html>

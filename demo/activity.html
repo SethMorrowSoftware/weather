@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark light">
+<title>Activity · The Castle Fun Center</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%8F%B0%3C/text%3E%3C/svg%3E">
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+<div class="banner">📦 <b>Static demo</b> — sample activity, nothing is recorded. The live app reads <code>audit.log</code>.</div>
+<header>
+  <h1><span class="logo">🏰</span> The Castle Fun Center <span style="font-weight:500;color:var(--muted2);font-size:12px;letter-spacing:.02em">· MQTT Command Center</span></h1>
+  <nav>
+    <a href="index.html">Dashboard</a>
+    <a href="settings.html">Settings</a>
+    <a href="rules.html">Rules</a>
+    <a href="inputs.html">Inputs</a>
+    <a href="mqtt.html">MQTT</a>
+    <a href="activity.html" class="active">Activity</a>
+    <a href="history.html">History</a>
+    <a href="system.html">System</a>
+  </nav>
+  <span class="spacer"></span>
+  <span class="conn"><span class="dot up"></span>MQTT connected</span>
+</header>
+
+<main>
+  <div class="card">
+    <div class="toprow">
+      <div><h3 style="margin:0">Activity</h3>
+        <p class="muted" style="margin:4px 0 0">Every device state change (automatic or manual) and operator
+         action, newest first. Read-only.</p></div>
+      <div class="muted" id="act-count">—</div>
+    </div>
+    <div class="table-wrap" style="margin-top:12px">
+      <table>
+        <thead><tr><th>When</th><th>What</th><th>Action</th><th>Detail</th><th>By</th></tr></thead>
+        <tbody id="actbody"><tr><td colspan="5" class="muted">Loading…</td></tr></tbody>
+      </table>
+    </div>
+    <p class="muted" style="margin-top:12px">In the live app this refreshes from <code>audit.log</code>;
+     here it is sample data.</p>
+  </div>
+</main>
+
+<footer>The Castle Fun Center · MQTT Command Center · demo build · <a href="https://github.com/SethMorrowSoftware/mqtt-dev" target="_blank" rel="noopener">Docs ↗</a></footer>
+<div id="toast"></div>
+<script src="assets/app.js"></script>
+</body>
+</html>

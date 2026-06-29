@@ -91,6 +91,9 @@ else
   c_y "No terminal for the setup wizard -- copied the example config."
   c_y "EDIT $CONFIG (set your latitude/longitude and contact) before relying on it."
 fi
+# config.yaml can hold secrets (MQTT/web passwords, Slack + status tokens); keep
+# it owner-only rather than the default world-readable 0644.
+chmod 600 "$CONFIG" 2>/dev/null || true
 
 # ---------------------------------------------------------------------------
 if [ "$SETUP_MOSQUITTO" = "1" ]; then

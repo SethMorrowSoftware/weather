@@ -92,6 +92,1336 @@ def test_compound_unknown_is_failsafe():
     assert w.evaluate_rule(rule, {"is_raining": None, "precip_accum_in": 0.5}) is True
 
 
+def test_nested_any_all_not():
+    # not(temperature < 35)  AND  (raining OR accum >= 0.25)
+    rule = {"name": "r", "when": {"all": [
+        {"not": {"metric": "temperature", "operator": "<", "value": 35}},
+        {"any": [
+            {"metric": "is_raining", "operator": "==", "value": True},
+            {"metric": "precip_accum_in", "operator": ">=", "value": 0.25},
+        ]},
+    ]}}
+    # warm (not<35 -> true) and raining -> true
+    assert w.evaluate_rule(rule, {"temperature": 50, "is_raining": True,
+                                  "precip_accum_in": 0.0}) is True
+    # cold (not<35 -> false) kills the ALL regardless of the rain branch
+    assert w.evaluate_rule(rule, {"temperature": 20, "is_raining": True,
+                                  "precip_accum_in": 1.0}) is False
+    # warm, dry both ways -> false
+    assert w.evaluate_rule(rule, {"temperature": 50, "is_raining": False,
+                                  "precip_accum_in": 0.0}) is False
+
+
+def test_not_propagates_unknown():
+    rule = {"name": "r", "when": {"not": {"metric": "is_raining",
+                                          "operator": "==", "value": True}}}
+    assert w.evaluate_rule(rule, {"is_raining": True}) is False
+    assert w.evaluate_rule(rule, {"is_raining": False}) is True
+    assert w.evaluate_rule(rule, {"is_raining": None}) is None   # unknown stays unknown
+
+
+def test_between_operator():
+    rule = {"name": "r", "when": {"metric": "temperature",
+                                  "operator": "between", "value": [40, 80]}}
+    assert w.evaluate_rule(rule, {"temperature": 60}) is True
+    assert w.evaluate_rule(rule, {"temperature": 40}) is True    # inclusive
+    assert w.evaluate_rule(rule, {"temperature": 80}) is True    # inclusive
+    assert w.evaluate_rule(rule, {"temperature": 81}) is False
+    assert w.evaluate_rule(rule, {"temperature": None}) is None  # fail-safe
+
+
+def test_in_operator_numeric_and_text():
+    rnum = {"name": "r", "when": {"metric": "humidity",
+                                  "operator": "in", "value": [30, 50, 70]}}
+    assert w.evaluate_rule(rnum, {"humidity": 50}) is True
+    assert w.evaluate_rule(rnum, {"humidity": 55}) is False
+    rtext = {"name": "r", "when": {"metric": "short_forecast",
+                                   "operator": "in", "value": ["Sunny", "Clear"]}}
+    assert w.evaluate_rule(rtext, {"short_forecast": "clear"}) is True   # case-insensitive
+    assert w.evaluate_rule(rtext, {"short_forecast": "Rain"}) is False
+
+
+def test_validate_accepts_nested_and_new_ops():
+    w.validate_config(_min_cfg(rules=[{
+        "name": "complex", "topic": "t", "on_match": "1",
+        "when": {"all": [
+            {"not": {"metric": "is_raining", "operator": "==", "value": True}},
+            {"metric": "temperature", "operator": "between", "value": [40, 90]},
+            {"metric": "humidity", "operator": "in", "value": [10, 20, 30]},
+        ]}}]))
+
+
+def test_validate_rejects_bad_between_and_in():
+    for when, needle in [
+        ({"metric": "temperature", "operator": "between", "value": 5}, "between needs"),
+        ({"metric": "temperature", "operator": "between", "value": [90, 10]}, "low must be <= high"),
+        ({"metric": "temperature", "operator": "between", "value": ["a", "b"]}, "must be numbers"),
+        ({"metric": "humidity", "operator": "in", "value": []}, "non-empty list"),
+        ({"metric": "humidity", "operator": "in", "value": ["x"]}, "all numbers"),
+        ({"not": {"metric": "bogus", "operator": "<", "value": 1}}, "unknown metric"),
+        ({"any": []}, "non-empty list"),
+    ]:
+        try:
+            w.validate_config(_min_cfg(rules=[{
+                "name": "r", "topic": "t", "on_match": "1", "when": when}]))
+            raise AssertionError(f"expected ValueError containing {needle!r}")
+        except ValueError as e:
+            assert needle in str(e), f"got {e!r}, wanted {needle!r}"
+
+
+def test_validate_enabled_default_and_coercion():
+    cfg = w.validate_config(_min_cfg())
+    assert cfg["rules"][0]["enabled"] is True            # default on
+    cfg2 = w.validate_config(_min_cfg(rules=[{
+        "name": "r", "topic": "t", "on_match": "1", "enabled": False,
+        "when": {"metric": "temperature", "operator": "<", "value": 5}}]))
+    assert cfg2["rules"][0]["enabled"] is False
+    cfg3 = w.validate_config(_min_cfg(rules=[{
+        "name": "r", "topic": "t", "on_match": "1", "enabled": "false",
+        "when": {"metric": "temperature", "operator": "<", "value": 5}}]))
+    assert cfg3["rules"][0]["enabled"] is False          # string coerced
+
+
+def test_parse_duration():
+    assert w.parse_duration("30s") == 30
+    assert w.parse_duration("10m") == 600
+    assert w.parse_duration("2h") == 7200
+    assert w.parse_duration(5) == 300          # bare number == minutes
+    assert w.parse_duration("0m") == 0
+    assert w.parse_duration(None, 0) == 0
+    assert w.parse_duration("garbage", 99) == 99
+
+
+def test_in_window_hours_days_and_wrap():
+    from datetime import datetime
+    mon_10 = datetime(2026, 6, 29, 10, 0)   # Monday 10:00
+    mon_05 = datetime(2026, 6, 29, 5, 0)    # Monday 05:00
+    sun_10 = datetime(2026, 6, 28, 10, 0)   # Sunday 10:00
+    assert w.in_window(None, mon_10) is True                                  # no window -> always
+    assert w.in_window({"from": "06:00", "to": "20:00"}, mon_10) is True
+    assert w.in_window({"from": "06:00", "to": "20:00"}, mon_05) is False     # before open
+    assert w.in_window({"from": "06:00", "to": "20:00",
+                        "days": ["mon", "tue"]}, sun_10) is False             # wrong day
+    # overnight window 22:00 -> 06:00 wraps past midnight
+    assert w.in_window({"from": "22:00", "to": "06:00"}, mon_05) is True
+    assert w.in_window({"from": "22:00", "to": "06:00"}, mon_10) is False
+    # `to` is exclusive
+    assert w.in_window({"from": "06:00", "to": "10:00"}, mon_10) is False
+
+
+def test_apply_hysteresis_min_on_off_cooldown():
+    from datetime import datetime, timedelta, timezone
+    t0 = datetime(2026, 6, 29, 12, 0, tzinfo=timezone.utc)
+    # first commit: no prior state -> desired wins regardless of timers
+    assert w.apply_hysteresis({"min_off": "10m"}, None, True, None, t0) is True
+    # currently ON, want OFF, min_on=10m not yet elapsed -> hold ON
+    assert w.apply_hysteresis({"min_on": "10m"}, True, False, t0, t0 + timedelta(minutes=5)) is True
+    # ...once min_on elapses, allow OFF
+    assert w.apply_hysteresis({"min_on": "10m"}, True, False, t0, t0 + timedelta(minutes=11)) is False
+    # currently OFF, want ON, min_off holds it OFF until elapsed
+    assert w.apply_hysteresis({"min_off": "10m"}, False, True, t0, t0 + timedelta(minutes=5)) is False
+    assert w.apply_hysteresis({"min_off": "10m"}, False, True, t0, t0 + timedelta(minutes=11)) is True
+    # cooldown blocks any transition regardless of direction
+    assert w.apply_hysteresis({"cooldown": "30m"}, True, False, t0, t0 + timedelta(minutes=20)) is True
+    # no hysteresis config -> desired passes straight through
+    assert w.apply_hysteresis(None, True, False, t0, t0 + timedelta(minutes=1)) is False
+
+
+def test_resolve_desired_window_gate():
+    from datetime import datetime
+    rule = {"name": "r", "window": {"from": "06:00", "to": "20:00"},
+            "when": {"metric": "temperature", "operator": ">", "value": 50}}
+    inside = datetime(2026, 6, 29, 10, 0)
+    outside = datetime(2026, 6, 29, 22, 0)
+    assert w.resolve_desired(rule, {"temperature": 60}, inside) is True
+    assert w.resolve_desired(rule, {"temperature": 40}, inside) is False
+    assert w.resolve_desired(rule, {"temperature": 60}, outside) is False    # window forces off
+    # no window -> just the evaluation
+    assert w.resolve_desired({"name": "r", "when": rule["when"]},
+                             {"temperature": 60}, outside) is True
+
+
+def test_validate_window_and_hysteresis():
+    w.validate_config(_min_cfg(rules=[{
+        "name": "r", "topic": "t", "on_match": "1",
+        "window": {"from": "06:00", "to": "20:00", "days": ["mon", "fri"]},
+        "hysteresis": {"min_on": "10m", "min_off": "5m", "cooldown": "0m"},
+        "when": {"metric": "temperature", "operator": ">", "value": 50}}]))
+    for win, needle in [
+        ({"from": "25:00", "to": "26:00"}, "out of range"),
+        ({"from": "6am", "to": "20:00"}, "HH:MM"),
+        ({"days": ["funday"]}, "invalid day"),
+        ({"days": []}, "non-empty list"),
+    ]:
+        try:
+            w.validate_config(_min_cfg(rules=[{
+                "name": "r", "topic": "t", "on_match": "1", "window": win,
+                "when": {"metric": "temperature", "operator": ">", "value": 50}}]))
+            raise AssertionError(f"expected ValueError for window {win}")
+        except ValueError as e:
+            assert needle in str(e), f"got {e!r}, wanted {needle!r}"
+    try:
+        w.validate_config(_min_cfg(rules=[{
+            "name": "r", "topic": "t", "on_match": "1",
+            "hysteresis": {"min_on": "ten minutes"},
+            "when": {"metric": "temperature", "operator": ">", "value": 50}}]))
+        raise AssertionError("expected ValueError for bad hysteresis duration")
+    except ValueError as e:
+        assert "duration" in str(e)
+
+
+def test_changed_operator():
+    st = w.EngineState()
+    rule = {"name": "r", "when": {"metric": "temperature", "operator": "changed"}}
+    # first cycle: nothing to compare to yet -> False, then remember 70
+    assert w.evaluate_rule(rule, {"temperature": 70}, st) is False
+    st.observe({"temperature": 70})
+    # same value -> not changed
+    assert w.evaluate_rule(rule, {"temperature": 70}, st) is False
+    st.observe({"temperature": 70})
+    # different value -> changed
+    assert w.evaluate_rule(rule, {"temperature": 72}, st) is True
+    st.observe({"temperature": 72})
+    # metric unavailable -> unknown (fail-safe)
+    assert w.evaluate_rule(rule, {"temperature": None}, st) is None
+    # without engine state the construct can't evaluate -> None
+    assert w.evaluate_rule(rule, {"temperature": 80}) is None
+
+
+def test_for_sustain_modifier():
+    from datetime import datetime, timedelta, timezone
+    st = w.EngineState()
+    t0 = datetime(2026, 6, 29, 12, 0, tzinfo=timezone.utc)
+    rule = {"name": "r", "when": {"metric": "temperature", "operator": ">",
+                                  "value": 85, "for": "10m"}}
+    # condition true but not yet sustained 10 min -> False
+    assert w.evaluate_rule(rule, {"temperature": 90}, st, t0) is False
+    assert w.evaluate_rule(rule, {"temperature": 90}, st, t0 + timedelta(minutes=5)) is False
+    # sustained past 10 min -> True
+    assert w.evaluate_rule(rule, {"temperature": 90}, st, t0 + timedelta(minutes=11)) is True
+    # drops below -> resets the timer (False), and must re-accumulate
+    assert w.evaluate_rule(rule, {"temperature": 80}, st, t0 + timedelta(minutes=12)) is False
+    assert w.evaluate_rule(rule, {"temperature": 90}, st, t0 + timedelta(minutes=13)) is False
+    assert w.evaluate_rule(rule, {"temperature": 90}, st, t0 + timedelta(minutes=24)) is True
+    # unknown breaks continuity -> None (fail-safe), and resets timer
+    assert w.evaluate_rule(rule, {"temperature": None}, st, t0 + timedelta(minutes=25)) is None
+    assert w.evaluate_rule(rule, {"temperature": 90}, st, t0 + timedelta(minutes=26)) is False
+
+
+def test_validate_changed_and_for():
+    w.validate_config(_min_cfg(rules=[{
+        "name": "r", "topic": "t", "on_match": "1",
+        "when": {"all": [
+            {"metric": "temperature", "operator": "changed"},
+            {"metric": "humidity", "operator": ">", "value": 80, "for": "15m"},
+        ]}}]))
+    # bad `for` duration is rejected
+    try:
+        w.validate_config(_min_cfg(rules=[{
+            "name": "r", "topic": "t", "on_match": "1",
+            "when": {"metric": "temperature", "operator": ">", "value": 5,
+                     "for": "soon"}}]))
+        raise AssertionError("expected ValueError for bad for: duration")
+    except ValueError as e:
+        assert "must" in str(e) and "duration" in str(e)
+
+
+def test_override_store_roundtrip():
+    import tempfile, os, json
+    p = tempfile.mktemp(suffix=".json")
+    try:
+        assert w.load_overrides(p) == {}            # missing -> empty
+        w.set_override(p, "pump", "on")
+        assert w.load_overrides(p) == {"pump": "on"}
+        w.set_override(p, "fan", "off")
+        assert w.load_overrides(p) == {"pump": "on", "fan": "off"}
+        w.set_override(p, "pump", "auto")           # auto clears the key
+        assert w.load_overrides(p) == {"fan": "off"}
+        # corrupt / bad values are ignored
+        open(p, "w").write("{ not json")
+        assert w.load_overrides(p) == {}
+        json.dump({"x": "on", "y": "bogus"}, open(p, "w"))
+        assert w.load_overrides(p) == {"x": "on"}
+        try:
+            w.set_override(p, "z", "weird")
+            raise AssertionError("expected ValueError for bad state")
+        except ValueError:
+            pass
+    finally:
+        for s in ("", ".tmp"):
+            try: os.unlink(p + s)
+            except OSError: pass
+
+
+def test_effective_manual():
+    rule = {"name": "pump", "manual": "off"}
+    assert w.effective_manual(rule, {}) == "off"                 # config default
+    assert w.effective_manual(rule, {"pump": "on"}) == "on"      # override wins
+    assert w.effective_manual({"name": "x"}, {}) == "auto"       # default
+
+
+def test_audit_appends_jsonl():
+    import tempfile, os, json
+    p = tempfile.mktemp(suffix=".log")
+    try:
+        w.audit(p, device="pump", action="manual_set", state="on", by="admin")
+        w.audit(p, device="pump", state="off", source="auto", by="monitor")
+        lines = [json.loads(l) for l in open(p) if l.strip()]
+        assert len(lines) == 2
+        assert lines[0]["device"] == "pump" and lines[0]["by"] == "admin"
+        assert "ts" in lines[0] and lines[1]["source"] == "auto"
+    finally:
+        try: os.unlink(p)
+        except OSError: pass
+
+
+def test_validate_manual_control_gating_and_manual_field():
+    # allow_manual_control without a login is forced off (fail closed)
+    cfg = w.validate_config(_min_cfg(web={"allow_manual_control": True}))
+    assert cfg["web"]["allow_manual_control"] is False
+    # with a login it stays on
+    cfg2 = w.validate_config(_min_cfg(
+        web={"allow_manual_control": True, "username": "a", "password": "b"}))
+    assert cfg2["web"]["allow_manual_control"] is True
+    # per-rule manual coerces/validates; defaults to auto
+    assert cfg["rules"][0]["manual"] == "auto"
+    cfg3 = w.validate_config(_min_cfg(rules=[{
+        "name": "r", "topic": "t", "on_match": "1", "manual": "ON",
+        "when": {"metric": "temperature", "operator": "<", "value": 5}}]))
+    assert cfg3["rules"][0]["manual"] == "on"
+    cfg4 = w.validate_config(_min_cfg(rules=[{
+        "name": "r", "topic": "t", "on_match": "1", "manual": "bogus",
+        "when": {"metric": "temperature", "operator": "<", "value": 5}}]))
+    assert cfg4["rules"][0]["manual"] == "auto"
+    # new file defaults exist
+    assert cfg["overrides_file"] == "overrides.json"
+    assert cfg["audit_file"] == "audit.log"
+
+
+def test_webui_manual_control_endpoint():
+    try:
+        import webui
+    except Exception as e:
+        print(f"  SKIP  test_webui_manual_control_endpoint ({e})")
+        return
+    import tempfile, os, yaml, json, base64
+
+    def _client(allow, login=True):
+        cfg = {
+            "version": 1, "location": {"latitude": 41.0, "longitude": -74.0},
+            "user_agent": "x (a@b.com)", "poll_interval_minutes": 15,
+            "precipitation": {"lookback_hours": 24},
+            "mqtt": {"host": "localhost", "port": 1883, "qos": 1, "retain": True},
+            "web": {"enabled": True, "host": "0.0.0.0", "port": 8080,
+                    "username": "admin" if login else "", "password": "pw" if login else "",
+                    "allow_manual_control": allow},
+            "overrides_file": ovr, "audit_file": aud,
+            "rules": [{"name": "pump", "topic": "t", "on_match": "ON", "on_clear": "OFF",
+                       "when": {"metric": "is_raining", "operator": "==", "value": True}}],
+        }
+        open(p, "w").write(yaml.safe_dump(cfg))
+        webui.CONFIG_PATH = p
+        webui.app.config["TESTING"] = True
+        return webui.app.test_client()
+
+    p = tempfile.mktemp(suffix=".yaml")
+    ovr = tempfile.mktemp(suffix=".json")
+    aud = tempfile.mktemp(suffix=".log")
+    hdr = {"Authorization": "Basic " + base64.b64encode(b"admin:pw").decode()}
+    try:
+        # disabled -> 403, nothing written
+        c = _client(allow=False)
+        r = c.post("/api/control", json={"device": "pump", "state": "on"}, headers=hdr)
+        assert r.status_code == 403
+        assert w.load_overrides(ovr) == {}
+
+        # enabled + authed -> 200, persisted + audited
+        c = _client(allow=True)
+        r = c.post("/api/control", json={"device": "pump", "state": "on"}, headers=hdr)
+        assert r.status_code == 200 and r.get_json()["manual"] == "on"
+        assert w.load_overrides(ovr) == {"pump": "on"}
+        events = [json.loads(l) for l in open(aud) if l.strip()]
+        assert events[-1] == {**events[-1], "device": "pump", "action": "manual_set",
+                              "state": "on", "by": "admin"}
+        # auto clears it
+        r = c.post("/api/control", json={"device": "pump", "state": "auto"}, headers=hdr)
+        assert r.status_code == 200 and w.load_overrides(ovr) == {}
+        # unknown device / bad state
+        assert c.post("/api/control", json={"device": "nope", "state": "on"}, headers=hdr).status_code == 404
+        assert c.post("/api/control", json={"device": "pump", "state": "x"}, headers=hdr).status_code == 400
+        # wrong credentials are rejected by auth
+        bad = {"Authorization": "Basic " + base64.b64encode(b"admin:WRONG").decode()}
+        assert c.post("/api/control", json={"device": "pump", "state": "on"}, headers=bad).status_code == 401
+    finally:
+        for f in (p, ovr, aud):
+            for s in ("", ".tmp", ".bak"):
+                try: os.unlink(f + s)
+                except OSError: pass
+
+
+def test_schedule_metrics():
+    from datetime import datetime
+    sat = w.schedule_metrics(datetime(2026, 6, 27, 9, 30))   # Saturday 09:30
+    assert sat == {"time_hour": 9, "time_minute": 30,
+                   "time_weekday": "sat", "time_is_weekend": True}
+    mon = w.schedule_metrics(datetime(2026, 6, 29, 14, 5))   # Monday 14:05
+    assert mon["time_weekday"] == "mon" and mon["time_is_weekend"] is False
+    assert mon["time_hour"] == 14
+
+
+def test_schedule_rules_validate_and_evaluate():
+    # a rule combining weather + time validates and evaluates against the merged context
+    cfg = w.validate_config(_min_cfg(rules=[{
+        "name": "daytime_weekday_hold", "topic": "t", "on_match": "1",
+        "when": {"all": [
+            {"metric": "is_raining", "operator": "==", "value": True},
+            {"metric": "time_hour", "operator": "between", "value": [6, 20]},
+            {"metric": "time_is_weekend", "operator": "==", "value": False},
+            {"metric": "time_weekday", "operator": "in", "value": ["mon", "fri"]},
+        ]}}]))
+    rule = cfg["rules"][0]
+    ctx = dict({"is_raining": True}, **w.schedule_metrics(__import__("datetime").datetime(2026, 6, 29, 10, 0)))
+    assert w.evaluate_rule(rule, ctx) is True            # Mon 10:00, raining
+    ctx2 = dict({"is_raining": True}, **w.schedule_metrics(__import__("datetime").datetime(2026, 6, 27, 10, 0)))
+    assert w.evaluate_rule(rule, ctx2) is False          # Saturday -> weekend, not in [mon,fri]
+
+
+def test_variables_validate_catalogue_and_rules():
+    cfg = w.validate_config(_min_cfg(
+        variables={"maintenance_mode": {"type": "bool", "default": True},
+                   "temp_setpoint": {"type": "number", "default": 70}},
+        rules=[{"name": "r", "topic": "t", "on_match": "1",
+                "when": {"any": [
+                    {"metric": "var_maintenance_mode", "operator": "==", "value": True},
+                    {"metric": "var_temp_setpoint", "operator": ">", "value": 65},
+                ]}}]))
+    assert cfg["variables"]["maintenance_mode"] == {"type": "bool", "default": True}
+    cat = w.metric_catalogue(cfg)
+    assert "var_maintenance_mode" in cat and cat["var_temp_setpoint"]["type"] == "number"
+    # a rule referencing an undeclared variable is rejected
+    try:
+        w.validate_config(_min_cfg(rules=[{"name": "r", "topic": "t", "on_match": "1",
+            "when": {"metric": "var_unknown", "operator": "==", "value": True}}]))
+        raise AssertionError("expected ValueError for unknown var metric")
+    except ValueError as e:
+        assert "unknown metric" in str(e)
+    # bad variable type rejected
+    try:
+        w.validate_config(_min_cfg(variables={"x": {"type": "text"}}))
+        raise AssertionError("expected ValueError for bad var type")
+    except ValueError as e:
+        assert "type must be one of" in str(e)
+
+
+def test_variable_store_and_metrics():
+    import tempfile, os
+    declared = {"maintenance_mode": {"type": "bool", "default": False},
+                "temp_setpoint": {"type": "number", "default": 70}}
+    p = tempfile.mktemp(suffix=".json")
+    try:
+        # defaults when nothing stored
+        assert w.load_variables(p, declared) == {"maintenance_mode": False, "temp_setpoint": 70}
+        w.set_variable(p, "maintenance_mode", "true", declared)
+        w.set_variable(p, "temp_setpoint", "68.5", declared)
+        vals = w.load_variables(p, declared)
+        assert vals == {"maintenance_mode": True, "temp_setpoint": 68.5}
+        assert w.variable_metrics(vals) == {"var_maintenance_mode": True, "var_temp_setpoint": 68.5}
+        try:
+            w.set_variable(p, "nope", 1, declared)
+            raise AssertionError("expected ValueError for undeclared variable")
+        except ValueError:
+            pass
+    finally:
+        for s in ("", ".tmp"):
+            try: os.unlink(p + s)
+            except OSError: pass
+
+
+def test_webui_variable_endpoint_and_builder_metrics():
+    try:
+        import webui
+    except Exception as e:
+        print(f"  SKIP  test_webui_variable_endpoint_and_builder_metrics ({e})")
+        return
+    import tempfile, os, yaml, base64
+
+    p = tempfile.mktemp(suffix=".yaml")
+    varf = tempfile.mktemp(suffix=".json")
+    aud = tempfile.mktemp(suffix=".log")
+    cfg = {
+        "version": 1, "location": {"latitude": 41.0, "longitude": -74.0},
+        "user_agent": "x (a@b.com)", "poll_interval_minutes": 15,
+        "precipitation": {"lookback_hours": 24},
+        "mqtt": {"host": "localhost", "port": 1883, "qos": 1, "retain": True},
+        "web": {"enabled": True, "host": "0.0.0.0", "port": 8080,
+                "username": "admin", "password": "pw", "allow_manual_control": True},
+        "variables": {"maintenance_mode": {"type": "bool", "default": False}},
+        "variables_file": varf, "audit_file": aud,
+        "rules": [{"name": "hold", "topic": "t", "on_match": "1",
+                   "when": {"metric": "var_maintenance_mode", "operator": "==", "value": True}}],
+    }
+    open(p, "w").write(yaml.safe_dump(cfg))
+    webui.CONFIG_PATH = p
+    webui.app.config["TESTING"] = True
+    c = webui.app.test_client()
+    hdr = {"Authorization": "Basic " + base64.b64encode(b"admin:pw").decode()}
+    try:
+        # builder discovers the variable metric
+        bm = webui.builder_metrics(yaml.safe_load(open(p)))
+        assert "var_maintenance_mode" in bm and bm["var_maintenance_mode"]["type"] == "bool"
+        # set the variable via the endpoint
+        r = c.post("/api/variable", json={"name": "maintenance_mode", "value": "true"}, headers=hdr)
+        assert r.status_code == 200 and r.get_json()["value"] is True
+        assert w.load_variables(varf, {"maintenance_mode": {"type": "bool", "default": False}}) == {"maintenance_mode": True}
+        # unknown variable -> 404
+        assert c.post("/api/variable", json={"name": "nope", "value": "1"}, headers=hdr).status_code == 404
+    finally:
+        for f in (p, varf, aud):
+            for s in ("", ".tmp", ".bak"):
+                try: os.unlink(f + s)
+                except OSError: pass
+
+
+def test_mqtt_in_coerce_and_routing():
+    assert w.coerce_payload(b"3.5", "number") == 3.5
+    assert w.coerce_payload(b"  on ", "bool") is True
+    assert w.coerce_payload(b"off", "bool") is False
+    assert w.coerce_payload(b"hello", "string") == "hello"
+    assert w.coerce_payload(b"not-a-number", "number") is None     # junk -> None
+    # routing: store updates only for known topics; None coercion keeps last value
+    store, tmap = {}, {"sensors/tank": {"topic": "sensors/tank", "metric": "tank_level",
+                                        "parse": "number"}}
+    assert w.handle_mqtt_input(store, tmap, "sensors/tank", b"42") is True   # new value
+    assert store == {"tank_level": 42}
+    assert w.handle_mqtt_input(store, tmap, "sensors/tank", b"42") is False  # unchanged
+    assert w.handle_mqtt_input(store, tmap, "sensors/tank", b"43") is True   # changed
+    assert store == {"tank_level": 43}
+    assert w.handle_mqtt_input(store, tmap, "sensors/tank", b"bad") is False  # junk ignored
+    assert store == {"tank_level": 43}
+    assert w.handle_mqtt_input(store, tmap, "other/topic", b"9") is False    # unknown topic
+    assert store == {"tank_level": 43}
+
+
+def test_event_driven_wake_hook():
+    # The mqtt client wakes the loop only when a known input actually changes.
+    try:
+        import weather_mqtt as _w
+        mq = {"client_id": "test-evt", "host": "localhost", "port": 1883}
+        woke = []
+        client = _w.make_mqtt_client(
+            mq, [{"topic": "s/tank", "metric": "tank_level", "parse": "number"}],
+            {}, on_input=lambda: woke.append(1))
+    except Exception as e:
+        print(f"  SKIP  test_event_driven_wake_hook ({e})")
+        return
+
+    class _Msg:
+        def __init__(self, t, p): self.topic, self.payload, self.qos, self.retain = t, p, 0, False
+    client.on_message(client, None, _Msg("s/tank", b"10"))   # new -> wake
+    client.on_message(client, None, _Msg("s/tank", b"10"))   # same -> no wake
+    client.on_message(client, None, _Msg("s/tank", b"11"))   # changed -> wake
+    client.on_message(client, None, _Msg("other", b"1"))     # unknown -> no wake
+    assert len(woke) == 2
+    # event_driven defaults on, and is a clean bool
+    import copy
+    cfg = w.validate_config(copy.deepcopy({
+        "location": {"latitude": 1, "longitude": 2}, "user_agent": "x (a@b.com)",
+        "mqtt": {}, "rules": [{"name": "r", "topic": "t", "on_match": "1",
+                               "when": {"metric": "is_raining", "operator": "==", "value": True}}]}))
+    assert cfg["event_driven"] is True
+
+
+def test_main_once_cycle_offline():
+    # Run one full poll cycle through main() with the network mocked, exercising
+    # the refactored weather-cache / publish / state / history path end-to-end.
+    import tempfile, os, sys, json, yaml
+    p = tempfile.mktemp(suffix=".yaml")
+    state = tempfile.mktemp(suffix=".json"); db = tempfile.mktemp(suffix=".db")
+    aud = tempfile.mktemp(suffix=".log"); logf = tempfile.mktemp(suffix=".log")
+    esf = tempfile.mktemp(suffix=".json")
+    cfg = {"version": 1, "location": {"latitude": 41.0, "longitude": -74.0},
+           "user_agent": "x (a@b.com)", "poll_interval_minutes": 15,
+           "precipitation": {"lookback_hours": 24},
+           "mqtt": {"host": "localhost", "port": 1883, "qos": 1, "retain": True},
+           "state_file": state, "audit_file": aud, "log_file": logf,
+           "engine_state_file": esf,
+           "history": {"enabled": True, "file": db, "retention_days": 14},
+           "rules": [{"name": "rainflag", "topic": "facility/rain", "on_match": "ON",
+                      "on_clear": "OFF",
+                      "when": {"metric": "is_raining", "operator": "==", "value": True}}]}
+    open(p, "w").write(yaml.safe_dump(cfg))
+
+    orig = (w.resolve_location, w.fetch_conditions, w.make_mqtt_client, sys.argv)
+    calls = {"fetch": 0, "pub": []}
+
+    class _Info:  rc = 0
+    class _Fake:
+        def publish(self, topic, payload, **k): calls["pub"].append((topic, payload)); return _Info()
+        def is_connected(self): return True
+        def connect_async(self, *a, **k): pass
+        def loop_start(self): pass
+        def loop_stop(self): pass
+        def disconnect(self): pass
+    try:
+        w.resolve_location = lambda *a, **k: {"office": "x"}
+        def _fetch(loc, ua, lookback):
+            calls["fetch"] += 1
+            return {"temperature": 60.0, "humidity": 80.0, "wind_speed_mph": 5.0,
+                    "is_raining": True, "precip_accum_in": 0.3,
+                    "precipitation_probability": 90.0, "short_forecast": "Rain",
+                    "active_alerts": []}
+        w.fetch_conditions = _fetch
+        w.make_mqtt_client = lambda *a, **k: _Fake()
+        sys.argv = ["weather_mqtt", "--config", p, "--once"]
+        w.main()
+        assert calls["fetch"] == 1                                   # one weather fetch
+        assert ("facility/rain", "ON") in calls["pub"]              # rule published ON
+        st = json.loads(open(state).read())
+        assert st["metrics"]["is_raining"] is True and st["rules"]
+        assert "temperature" in w.read_history(db, hours=24)        # history recorded
+    finally:
+        w.resolve_location, w.fetch_conditions, w.make_mqtt_client, sys.argv = orig
+        for f in (p, state, db, aud, logf, esf):
+            for s in ("", ".bak", ".tmp"):
+                try: os.unlink(f + s)
+                except OSError: pass
+
+
+def test_mqtt_in_validation_catalogue_and_rules():
+    cfg = w.validate_config(_min_cfg(
+        mqtt_inputs=[{"topic": "sensors/tank/level", "metric": "tank_level", "parse": "number"},
+                     {"topic": "sensors/door", "metric": "door_open", "parse": "bool"}],
+        rules=[{"name": "r", "topic": "t", "on_match": "1",
+                "when": {"all": [
+                    {"metric": "tank_level", "operator": "<", "value": 20},
+                    {"metric": "door_open", "operator": "==", "value": True},
+                ]}}]))
+    cat = w.metric_catalogue(cfg)
+    assert cat["tank_level"]["type"] == "number" and cat["door_open"]["type"] == "bool"
+    # the rule evaluates against merged mqtt_in values
+    rule = cfg["rules"][0]
+    assert w.evaluate_rule(rule, {"tank_level": 10, "door_open": True}) is True
+    assert w.evaluate_rule(rule, {"tank_level": 30, "door_open": True}) is False
+    # rejections: missing topic, bad parse, collision with a built-in metric
+    for inputs, needle in [
+        ([{"metric": "x", "parse": "number"}], "needs a 'topic'"),
+        ([{"topic": "t", "metric": "x", "parse": "weird"}], "parse must be one of"),
+        ([{"topic": "t", "metric": "temperature", "parse": "number"}], "collides"),
+        ([{"topic": "t", "metric": "bad name", "parse": "number"}], "alphanumeric"),
+    ]:
+        try:
+            w.validate_config(_min_cfg(mqtt_inputs=inputs))
+            raise AssertionError(f"expected ValueError for {inputs}")
+        except ValueError as e:
+            assert needle in str(e), f"got {e!r}, wanted {needle!r}"
+
+
+def test_http_extract_coerce_and_map():
+    data = {"current_kw": 3.5, "online": True, "phases": [{"volts": 240}, {"volts": 241}],
+            "name": "meter1"}
+    assert w.extract_path(data, "current_kw") == 3.5
+    assert w.extract_path(data, "$.phases.1.volts") == 241      # leading $., list index
+    assert w.extract_path(data, "phases.9.volts") is None       # out of range -> None
+    assert w.extract_path(data, "missing.key") is None
+    assert w.coerce_value("12.5", "number") == 12.5
+    assert w.coerce_value(True, "number") is None               # bool isn't a number
+    assert w.coerce_value("yes", "bool") is True
+    assert w.coerce_value(240, "string") == "240"
+    store = {}
+    w.apply_http_map(data, [
+        {"metric": "power_kw", "path": "current_kw", "type": "number"},
+        {"metric": "grid_up", "path": "online", "type": "bool"},
+        {"metric": "v1", "path": "phases.0.volts", "type": "number"},
+        {"metric": "absent", "path": "nope", "type": "number"},   # missing -> skipped
+    ], store)
+    assert store == {"power_kw": 3.5, "grid_up": True, "v1": 240}
+
+
+def test_poll_http_inputs_due_logic_and_failsafe():
+    from datetime import datetime, timedelta, timezone
+    t0 = datetime(2026, 6, 29, 12, 0, tzinfo=timezone.utc)
+    calls = []
+
+    def fake_fetch(url, timeout, ua):
+        calls.append(url)
+        return {"v": 7} if url.endswith("ok") else None
+
+    inputs = [{"url": "http://x/ok", "interval_minutes": 5, "timeout": 10,
+               "map": [{"metric": "kw", "path": "v", "type": "number"}]}]
+    store, last = {}, {}
+    w.poll_http_inputs(inputs, store, last, t0, "ua", fetch=fake_fetch)
+    assert store == {"kw": 7} and len(calls) == 1
+    # not due yet (2 min < 5 min) -> no fetch
+    w.poll_http_inputs(inputs, store, last, t0 + timedelta(minutes=2), "ua", fetch=fake_fetch)
+    assert len(calls) == 1
+    # due again
+    w.poll_http_inputs(inputs, store, last, t0 + timedelta(minutes=6), "ua", fetch=fake_fetch)
+    assert len(calls) == 2
+    # a failed fetch keeps the last good value
+    inputs[0]["url"] = "http://x/bad"
+    last.clear()
+    w.poll_http_inputs(inputs, store, last, t0 + timedelta(minutes=12), "ua", fetch=fake_fetch)
+    assert store == {"kw": 7}
+
+
+def test_http_inputs_validation_and_catalogue():
+    cfg = w.validate_config(_min_cfg(
+        http_inputs=[{"url": "https://meter.local/api", "interval_minutes": 5,
+                      "map": [{"metric": "power_kw", "path": "current_kw", "type": "number"}]}],
+        rules=[{"name": "r", "topic": "t", "on_match": "1",
+                "when": {"metric": "power_kw", "operator": ">", "value": 5}}]))
+    assert w.metric_catalogue(cfg)["power_kw"]["type"] == "number"
+    assert cfg["http_inputs"][0]["interval_minutes"] == 5
+    for inputs, needle in [
+        ([{"url": "ftp://x", "map": [{"metric": "a", "path": "b"}]}], "http:// or https://"),
+        ([{"url": "https://x", "map": []}], "non-empty list"),
+        ([{"url": "https://x", "map": [{"metric": "temperature", "path": "b"}]}], "collides"),
+        ([{"url": "https://x", "map": [{"metric": "a", "path": ""}]}], "needs a 'path'"),
+    ]:
+        try:
+            w.validate_config(_min_cfg(http_inputs=inputs))
+            raise AssertionError(f"expected ValueError for {inputs}")
+        except ValueError as e:
+            assert needle in str(e), f"got {e!r}, wanted {needle!r}"
+
+
+def test_is_daytime_and_schedule_inclusion():
+    from datetime import datetime, timezone
+    lat, lon = 41.25, -74.27        # New York area (EDT, UTC-4 in June)
+    noon = datetime(2026, 6, 28, 16, 0, tzinfo=timezone.utc)    # ~12:00 EDT
+    midnight = datetime(2026, 6, 28, 4, 0, tzinfo=timezone.utc)  # ~00:00 EDT
+    assert w.is_daytime(lat, lon, noon) is True
+    assert w.is_daytime(lat, lon, midnight) is False
+    # polar: high north latitude in June = midnight sun; in December = polar night
+    jun = datetime(2026, 6, 21, 12, 0, tzinfo=timezone.utc)
+    dec = datetime(2026, 12, 21, 12, 0, tzinfo=timezone.utc)
+    assert w.is_daytime(80.0, 0.0, jun) is True
+    assert w.is_daytime(80.0, 0.0, dec) is False
+    # schedule_metrics includes the flag only when lat/lon are supplied
+    assert "time_is_daytime" not in w.schedule_metrics(noon)
+    assert w.schedule_metrics(noon, lat, lon)["time_is_daytime"] is True
+
+
+def test_read_audit_newest_first_and_robust():
+    import tempfile, os
+    p = tempfile.mktemp(suffix=".log")
+    try:
+        assert w.read_audit(p) == []                       # missing file
+        w.audit(p, device="pump", state="on", source="auto", by="monitor")
+        w.audit(p, device="pump", action="manual_set", state="off", by="admin")
+        open(p, "a").write("{ not json\n\n")               # junk lines ignored
+        ev = w.read_audit(p, 10)
+        assert len(ev) == 2 and ev[0]["state"] == "off"    # newest first
+        assert ev[1]["device"] == "pump"
+        for i in range(5):
+            w.audit(p, device="d%d" % i, state="on", source="auto", by="monitor")
+        assert len(w.read_audit(p, 3)) == 3                # limit keeps newest
+    finally:
+        try: os.unlink(p)
+        except OSError: pass
+
+
+def test_webui_inputs_editor():
+    """The Inputs page saves variables / mqtt_inputs / http_inputs to config and
+    the new metrics become available to rules; collisions are rejected."""
+    try:
+        import webui
+    except Exception as e:
+        print(f"  SKIP  test_webui_inputs_editor ({e})")
+        return
+    import tempfile, os, yaml, json
+    p = tempfile.mktemp(suffix=".yaml")
+    cfg = {
+        "version": 1, "location": {"latitude": 41.0, "longitude": -74.0},
+        "user_agent": "x (a@b.com)", "poll_interval_minutes": 15,
+        "precipitation": {"lookback_hours": 24},
+        "mqtt": {"host": "localhost", "port": 1883, "qos": 1, "retain": True},
+        "web": {"enabled": True, "host": "0.0.0.0", "port": 8080, "username": "", "password": ""},
+        "rules": [{"name": "r", "topic": "t", "on_match": "1",
+                   "when": {"metric": "is_raining", "operator": "==", "value": True}}],
+    }
+    open(p, "w").write(yaml.safe_dump(cfg))
+    webui.CONFIG_PATH = p
+    webui.app.config["TESTING"] = True
+    c = webui.app.test_client()
+    try:
+        assert b'href="/inputs"' in c.get("/").data        # nav link
+        assert c.get("/inputs").status_code == 200
+        payload = {
+            "variables": [{"name": "maintenance_mode", "type": "bool", "default": "true"},
+                          {"name": "setpoint", "type": "number", "default": "72"}],
+            "mqtt_inputs": [{"topic": "sensors/tank", "metric": "tank_level", "parse": "number"}],
+            "http_inputs": [{"url": "https://meter.local/api", "interval_minutes": "5",
+                             "timeout": "10", "map": [{"metric": "power_kw", "path": "current_kw",
+                                                       "type": "number"}]}],
+        }
+        r = c.post("/inputs", data={"inputs_json": json.dumps(payload)})
+        assert b"Inputs saved" in r.data
+        saved = yaml.safe_load(open(p))
+        assert saved["variables"] == {"maintenance_mode": {"type": "bool", "default": True},
+                                      "setpoint": {"type": "number", "default": 72}}
+        assert saved["mqtt_inputs"][0]["metric"] == "tank_level"
+        assert saved["http_inputs"][0]["map"][0] == {"metric": "power_kw", "path": "current_kw",
+                                                     "type": "number"}
+        # the monitor accepts what the UI wrote, and the new metrics are in the catalogue
+        w.validate_config(yaml.safe_load(open(p)))
+        assert "var_maintenance_mode" in w.metric_catalogue(saved)
+        assert "tank_level" in w.metric_catalogue(saved)
+        # a metric-name collision with a built-in is rejected
+        bad = {"mqtt_inputs": [{"topic": "t", "metric": "temperature", "parse": "number"}]}
+        assert b"collides" in c.post("/inputs", data={"inputs_json": json.dumps(bad)}).data
+    finally:
+        for s in ("", ".bak", ".tmp"):
+            try: os.unlink(p + s)
+            except OSError: pass
+
+
+def test_value_metric_comparison():
+    # Compare a metric to another metric's live value (number and bool).
+    cond = {"metric": "tank_level", "operator": "<", "value_metric": "tank_setpoint"}
+    assert w._eval_condition(cond, {"tank_level": 40, "tank_setpoint": 50}, "r") is True
+    assert w._eval_condition(cond, {"tank_level": 60, "tank_setpoint": 50}, "r") is False
+    # rhs unavailable -> None (fail-safe hold), not a crash
+    assert w._eval_condition(cond, {"tank_level": 60}, "r") is None
+    # validation: only numeric-compare operators, both sides number/bool
+    specs = {**w.METRIC_SPECS,
+             "tank_level": {"type": "number", "ops": w.NUMBER_OPS},
+             "tank_setpoint": {"type": "number", "ops": w.NUMBER_OPS}}
+    w._validate_condition(cond, "r", specs)                      # ok
+    # comparing to a text metric is rejected (it has no numeric-compare op)
+    specs_txt = {**specs, "label": {"type": "text", "ops": w.TEXT_OPS}}
+    for bad, needle in [
+        ({"metric": "tank_level", "operator": "between", "value_metric": "tank_setpoint"}, "only works with"),
+        ({"metric": "tank_level", "operator": "<", "value_metric": "nope"}, "not a known metric"),
+        ({"metric": "tank_level", "operator": "<", "value_metric": "label"}, "must be a number/bool"),
+    ]:
+        try:
+            w._validate_condition(bad, "r", specs_txt)
+            assert False, f"expected rejection: {needle}"
+        except ValueError as e:
+            assert needle in str(e), f"{needle!r} not in {e}"
+
+
+def test_regex_operator():
+    # Text metric regex (case-insensitive) and alert regex.
+    fc = {"metric": "short_forecast", "operator": "regex", "value": "^(light|heavy) rain"}
+    assert w._eval_condition(fc, {"short_forecast": "Light Rain"}, "r") is True
+    assert w._eval_condition(fc, {"short_forecast": "Sunny"}, "r") is False
+    al = {"metric": "active_alert", "operator": "regex", "value": "flood|tornado"}
+    assert w._eval_condition(al, {"active_alerts": ["Flood Warning"]}, "r") is True
+    assert w._eval_condition(al, {"active_alerts": ["Heat Advisory"]}, "r") is False
+    # regex is offered for text metrics and validated as a pattern
+    assert "regex" in w.METRIC_SPECS["short_forecast"]["ops"]
+    w._validate_condition(fc, "r")                               # ok
+    try:
+        w._validate_condition({"metric": "short_forecast", "operator": "regex",
+                               "value": "([unclosed"}, "r")
+        assert False, "expected invalid-regex rejection"
+    except ValueError as e:
+        assert "invalid" in str(e)
+
+
+def test_computed_metrics_eval_and_validate():
+    # Safe arithmetic: ordered eval, dependency on earlier computed, fail-safe None.
+    computed = {"net_power": {"expr": "power_kw - solar_kw"},
+                "headroom": {"expr": "(net_power) * 2 + 1"}}
+    out = w.compute_metrics(computed, {"power_kw": 5, "solar_kw": 3})
+    assert out == {"net_power": 2, "headroom": 5}
+    assert w.compute_metrics(computed, {"power_kw": 5})["headroom"] is None   # missing input
+    assert w.compute_metrics({"r": {"expr": "a / b"}}, {"a": 1, "b": 0})["r"] is None  # div by zero
+    # bools coerce to 0/1 so flags can drive arithmetic
+    assert w.compute_metrics({"x": {"expr": "is_raining * 10"}}, {"is_raining": True}) == {"x": 10}
+    # unsafe expressions are rejected at compile time
+    for bad in ("__import__('os')", "a.b", "foo(1)", "a if b else c"):
+        try:
+            w.compile_expr(bad); assert False, f"expected rejection of {bad!r}"
+        except ValueError:
+            pass
+    # validation: collision, unknown ref, missing expr, cycle-by-forward-ref
+    taken = set(w.METRIC_SPECS) | {"power_kw", "solar_kw"}
+    w._validate_computed({"net_power": {"expr": "power_kw - solar_kw"}}, taken)
+    for bad, needle in [
+        ({"temperature": {"expr": "1+1"}}, "collides"),
+        ({"x": {"expr": "missing + 1"}}, "unknown metric"),
+        ({"x": {"expr": "power_kw"}, "y": {"expr": "z + 1"}}, "unknown metric"),  # forward ref to later 'z'
+        ({"x": {}}, "needs an 'expr'"),
+    ]:
+        try:
+            w._validate_computed(bad, taken); assert False, f"expected: {needle}"
+        except ValueError as e:
+            assert needle in str(e), f"{needle!r} not in {e}"
+
+
+def test_rule_actions_template_validate_and_fire():
+    # {{metric}} templating (bools render true/false; unknown renders empty)
+    assert w.render_template("lvl={{tank}} on={{flag}} x={{nope}}",
+                             {"tank": 7, "flag": True}) == "lvl=7 on=true x="
+    # validation: trigger + exactly-one-type + per-type required fields
+    ok = [{"trigger": "match", "mqtt": {"topic": "a/cmd", "payload": "ON", "qos": 1}},
+          {"webhook": {"url": "https://h/", "method": "POST", "body": "{{tank}}"}},
+          {"trigger": "clear", "notify": {"text": "cleared"}}]
+    assert len(w._validate_actions(ok, "r")) == 3
+    for bad, needle in [
+        ([{"trigger": "match"}], "exactly one"),
+        ([{"mqtt": {}}], "needs a 'topic'"),
+        ([{"webhook": {"method": "POST"}}], "needs a 'url'"),
+        ([{"webhook": {"url": "h", "method": "DELETE"}}], "method must be"),
+        ([{"notify": {"text": ""}}], "needs 'text'"),
+        ([{"trigger": "never", "notify": {"text": "x"}}], "'trigger' must be"),
+        ([{"mqtt": {"topic": "t"}, "notify": {"text": "x"}}], "exactly one"),
+    ]:
+        try:
+            w._validate_actions(bad, "r"); assert False, f"expected: {needle}"
+        except ValueError as e:
+            assert needle in str(e), f"{needle!r} not in {e}"
+
+    # fire_actions: only the matching trigger fires; templating applied; dry-run safe
+    class _Info:  rc = 0
+    class _Fake:
+        def __init__(self): self.pub = []
+        def publish(self, *a, **k): self.pub.append((a, k)); return _Info()
+    fc = _Fake()
+    rule = {"name": "r", "actions": [
+        {"trigger": "match", "mqtt": {"topic": "a/cmd", "payload": "v={{tank}}", "qos": 2, "retain": False}},
+        {"trigger": "clear", "mqtt": {"topic": "a/cmd", "payload": "OFF"}},
+        {"trigger": "both", "mqtt": {"topic": "log", "payload": "x"}}]}
+    w.fire_actions(rule, True, {"tank": 9}, fc, 1, True, {})     # match + both
+    assert [p[0] for p in fc.pub] == [("a/cmd", "v=9"), ("log", "x")]
+    assert fc.pub[0][1] == {"qos": 2, "retain": False}           # action overrides defaults
+    fc.pub.clear()
+    w.fire_actions(rule, False, {"tank": 9}, fc, 1, True, {})    # clear + both
+    assert [p[0][0] for p in fc.pub] == ["a/cmd", "log"]
+    # dry-run (client None) never raises and never publishes
+    w.fire_actions(rule, True, {"tank": 9}, None, 1, True, {})
+
+
+def test_full_config_with_actions_validates():
+    import copy
+    cfg = {"version": 1, "location": {"latitude": 41, "longitude": -74},
+           "user_agent": "x (a@b.com)", "mqtt": {},
+           "rules": [{"name": "r", "topic": "t", "on_match": "ON", "on_clear": "OFF",
+                      "when": {"metric": "is_raining", "operator": "==", "value": True},
+                      "actions": [{"trigger": "match", "webhook": {"url": "https://h/x"}},
+                                  {"notify": {"text": "rain={{is_raining}}"}}]}]}
+    out = w.validate_config(copy.deepcopy(cfg))
+    assert len(out["rules"][0]["actions"]) == 2
+    bad = copy.deepcopy(cfg); bad["rules"][0]["actions"] = [{"webhook": {"method": "POST"}}]
+    try:
+        w.validate_config(bad); assert False
+    except ValueError as e:
+        assert "needs a 'url'" in str(e)
+
+
+def test_fire_actions_audits():
+    # Each fired action is recorded to the audit log (so Activity can show it),
+    # with the kind, target, trigger, and an ok flag.
+    import tempfile, os
+    aud = tempfile.mktemp(suffix=".log")
+    class _Info:  rc = 0
+    class _Fake:
+        def publish(self, *a, **k): return _Info()
+    rule = {"name": "vent", "actions": [
+        {"trigger": "match", "mqtt": {"topic": "facility/fan", "payload": "v={{t}}"}},
+        {"trigger": "clear", "notify": {"text": "off"}}]}
+    try:
+        w.fire_actions(rule, True, {"t": 9}, _Fake(), 1, True, {}, aud)   # match -> mqtt only
+        events = w.read_audit(aud, 50)
+        assert len(events) == 1
+        e = events[0]
+        assert e["action"] == "action_fired" and e["device"] == "vent"
+        assert e["kind"] == "mqtt" and e["target"] == "facility/fan"
+        assert e["trigger"] == "match" and e["ok"] is True
+        # dry-run (client None) records nothing
+        w.fire_actions(rule, True, {"t": 9}, None, 1, True, {}, aud)
+        assert len(w.read_audit(aud, 50)) == 1
+    finally:
+        try: os.unlink(aud)
+        except OSError: pass
+
+
+def test_webui_rule_actions_roundtrip():
+    try:
+        import webui
+    except Exception as e:
+        print(f"  SKIP  test_webui_rule_actions_roundtrip ({e})")
+        return
+    import tempfile, os, json, yaml
+    p = tempfile.mktemp(suffix=".yaml")
+    cfg = {"version": 1, "location": {"latitude": 41.0, "longitude": -74.0},
+           "user_agent": "x (a@b.com)", "poll_interval_minutes": 15,
+           "precipitation": {"lookback_hours": 24},
+           "mqtt": {"host": "localhost", "port": 1883, "qos": 1, "retain": True},
+           "web": {"enabled": True, "host": "0.0.0.0", "port": 8080, "username": "", "password": ""},
+           "rules": [{"name": "r", "topic": "t", "on_match": "1",
+                      "when": {"metric": "is_raining", "operator": "==", "value": True}}]}
+    open(p, "w").write(yaml.safe_dump(cfg))
+    webui.CONFIG_PATH = p
+    webui.app.config["TESTING"] = True
+    c = webui.app.test_client()
+    try:
+        assert b"Extra actions" in c.get("/rules").data        # actions editor present
+        rules = [{"name": "vent", "topic": "facility/vent", "on_match": "ON", "on_clear": "OFF",
+                  "enabled": True, "combine": "any",
+                  "conditions": [{"metric": "temperature", "operator": ">", "value": "85"}],
+                  "actions": [
+                      {"kind": "mqtt", "on": "match", "topic": "facility/fan", "payload": "RUN {{temperature}}"},
+                      {"kind": "webhook", "on": "both", "url": "https://h/x", "method": "POST", "body": "t={{temperature}}"},
+                      {"kind": "notify", "on": "clear", "text": "vent cleared"}]}]
+        c.post("/rules", data={"mode": "form", "rules_json": json.dumps(rules)})
+        saved = yaml.safe_load(open(p))["rules"][0]
+        acts = saved["actions"]
+        # stored with the collision-safe `trigger` key (NOT `on`), correct values
+        assert [a["trigger"] for a in acts] == ["match", "both", "clear"]
+        assert acts[0]["mqtt"]["payload"] == "RUN {{temperature}}"
+        assert acts[1]["webhook"]["url"] == "https://h/x"
+        # the monitor accepts it, and it round-trips back to the builder shape
+        w.validate_config(yaml.safe_load(open(p)))
+        st = webui._rule_to_structured(saved)
+        assert [(a["kind"], a["on"]) for a in st["actions"]] == \
+            [("mqtt", "match"), ("webhook", "both"), ("notify", "clear")]
+        # a malformed action is rejected with a clear message
+        bad = [{"name": "b", "topic": "t", "on_match": "1", "enabled": True, "combine": "any",
+                "conditions": [{"metric": "is_raining", "operator": "==", "value": "true"}],
+                "actions": [{"kind": "notify", "on": "match", "text": "hi"},
+                            {"kind": "mqtt", "on": "match", "topic": ""}]}]  # empty topic -> skipped, ok
+        r = c.post("/rules", data={"mode": "form", "rules_json": json.dumps(bad)})
+        assert b"Rules saved" in r.data or b"saved" in r.data
+        # per-action QoS/retain from the form builder persist (and omit when unset)
+        q = [{"name": "q", "topic": "t", "on_match": "1", "enabled": True, "combine": "any",
+              "conditions": [{"metric": "is_raining", "operator": "==", "value": "true"}],
+              "actions": [{"kind": "mqtt", "on": "match", "topic": "a/cmd", "payload": "GO", "qos": 2, "retain": True},
+                          {"kind": "mqtt", "on": "clear", "topic": "b/cmd", "payload": "OFF", "qos": None, "retain": False}]}]
+        c.post("/rules", data={"mode": "form", "rules_json": json.dumps(q)})
+        qa = yaml.safe_load(open(p))["rules"][0]["actions"]
+        assert qa[0]["mqtt"]["qos"] == 2 and qa[0]["mqtt"]["retain"] is True
+        assert "qos" not in qa[1]["mqtt"] and "retain" not in qa[1]["mqtt"]   # unset -> omitted
+        w.validate_config(yaml.safe_load(open(p)))
+        qs = webui._rule_to_structured(yaml.safe_load(open(p))["rules"][0])
+        assert (qs["actions"][0]["qos"], qs["actions"][0]["retain"]) == (2, True)
+    finally:
+        for s in ("", ".bak", ".tmp"):
+            try: os.unlink(p + s)
+            except OSError: pass
+
+
+def test_mqtt_console_buffer_and_publish():
+    try:
+        import webui
+    except Exception as e:
+        print(f"  SKIP  test_mqtt_console_buffer_and_publish ({e})")
+        return
+    con = webui.MqttConsole(buffer_size=3)
+    con.record("sensors/a", b"1", qos=0, retain=True)
+    con.record("sensors/b", b"hello", qos=1, retain=False)
+    con.record("other/c", b"\xff\xfe", qos=0, retain=False)  # binary payload
+    # ring buffer caps at 3; a 4th drops the oldest
+    con.record("sensors/a", b"2", qos=0, retain=True)
+    msgs = con.messages()
+    assert len(msgs) == 3 and msgs[0]["topic"] == "sensors/b"   # oldest ("sensors/a"/1) evicted
+    assert msgs[-1]["payload"] == "2"
+    # incremental fetch by seq, and topic-prefix filter
+    last = msgs[-1]["seq"]
+    assert con.messages(since=last) == []
+    assert [m["topic"] for m in con.messages(topic="sensors/")] == ["sensors/b", "sensors/a"]
+    # binary payloads are flagged, never crash (other/c survived the eviction)
+    assert con.messages(topic="other/")[0]["binary"] is True
+    # per-topic latest map tracks the newest value + a count
+    tops = {t["topic"]: t for t in con.topics()}
+    assert tops["sensors/a"]["payload"] == "2" and tops["sensors/a"]["count"] == 2
+    # publish guards: wildcards/empty rejected; not-connected rejected
+    assert con.publish("", "x")[0] is False
+    assert con.publish("a/#", "x")[0] is False
+    assert con.publish("a/b", "x")[0] is False           # no client/connection
+    class _Info:  rc = 0
+    class _Fake:
+        def __init__(self): self.calls = []
+        def publish(self, *a, **k): self.calls.append((a, k)); return _Info()
+    con._client = _Fake(); con._connected = True
+    ok, err = con.publish("facility/cmd", "ON", qos=1, retain=True)
+    assert ok and err is None and con._client.calls[0][0][0] == "facility/cmd"
+
+
+def test_webui_mqtt_console_api_and_publish_gating():
+    try:
+        import webui
+    except Exception as e:
+        print(f"  SKIP  test_webui_mqtt_console_api_and_publish_gating ({e})")
+        return
+    import tempfile, os, json, base64, yaml
+    p = tempfile.mktemp(suffix=".yaml")
+    aud = tempfile.mktemp(suffix=".log")
+
+    def write_cfg(allow_publish, login=True):
+        web = {"enabled": True, "host": "0.0.0.0", "port": 8080,
+               "allow_mqtt_publish": allow_publish}
+        web["username"], web["password"] = ("admin", "pw") if login else ("", "")
+        cfg = {
+            "version": 1, "location": {"latitude": 41.0, "longitude": -74.0},
+            "user_agent": "x (a@b.com)", "poll_interval_minutes": 15,
+            "precipitation": {"lookback_hours": 24},
+            "mqtt": {"host": "localhost", "port": 1883, "qos": 1, "retain": True},
+            "web": web, "audit_file": aud,
+            "rules": [{"name": "r", "topic": "t", "on_match": "1",
+                       "when": {"metric": "is_raining", "operator": "==", "value": True}}],
+        }
+        open(p, "w").write(yaml.safe_dump(cfg))
+
+    webui.CONFIG_PATH = p
+    webui.app.config["TESTING"] = True
+    webui.console = webui.MqttConsole()        # fresh, isolated console
+    c = webui.app.test_client()
+    hdr = {"Authorization": "Basic " + base64.b64encode(b"admin:pw").decode()}
+    try:
+        write_cfg(allow_publish=True)
+        # page + nav link
+        assert c.get("/mqtt", headers=hdr).status_code == 200
+        assert b'href="/mqtt"' in c.get("/", headers=hdr).data
+        # feed reflects recorded messages and the publish gate
+        webui.console.record("sensors/x", b"7", qos=0, retain=True)
+        j = c.get("/api/mqtt?topics=1", headers=hdr).get_json()
+        assert j["enabled"] is True and j["can_publish"] is True
+        assert j["messages"][0]["topic"] == "sensors/x"
+        assert j["topic_list"][0]["topic"] == "sensors/x"
+        # publish succeeds with a fake broker client and is audited
+        class _Info:  rc = 0
+        class _Fake:
+            def publish(self, *a, **k): return _Info()
+        webui.console._client = _Fake(); webui.console._connected = True
+        r = c.post("/api/mqtt/publish", headers=hdr,
+                   json={"topic": "facility/cmd", "payload": "ON", "qos": 1, "retain": True})
+        assert r.status_code == 200 and r.get_json()["ok"] is True
+        assert json.loads(open(aud).read().splitlines()[-1])["action"] == "mqtt_publish"
+        # fail-closed: turn publishing off -> 403 even with a valid login
+        write_cfg(allow_publish=False)
+        r = c.post("/api/mqtt/publish", headers=hdr, json={"topic": "facility/cmd", "payload": "ON"})
+        assert r.status_code == 403
+        assert c.get("/api/mqtt", headers=hdr).get_json()["can_publish"] is False
+    finally:
+        for f in (p, aud):
+            for s in ("", ".bak", ".tmp"):
+                try: os.unlink(f + s)
+                except OSError: pass
+
+
+def test_allow_mqtt_publish_requires_login():
+    # Fail-closed at the config layer: enabling publish without a login is forced off.
+    cfg = {
+        "location": {"latitude": 1, "longitude": 2}, "user_agent": "x (a@b.com)",
+        "mqtt": {}, "web": {"allow_mqtt_publish": True},  # no username/password
+        "rules": [{"name": "r", "topic": "t", "on_match": "1",
+                   "when": {"metric": "temperature", "operator": "<", "value": 5}}],
+    }
+    out = w.validate_config(cfg)
+    assert out["web"]["allow_mqtt_publish"] is False
+    # with a login it sticks
+    cfg2 = dict(cfg); cfg2["web"] = {"allow_mqtt_publish": True, "username": "a", "password": "b"}
+    assert w.validate_config(cfg2)["web"]["allow_mqtt_publish"] is True
+
+
+def test_webui_activity_page_and_audit_api():
+    try:
+        import webui
+    except Exception as e:
+        print(f"  SKIP  test_webui_activity_page_and_audit_api ({e})")
+        return
+    import tempfile, os, yaml
+    p = tempfile.mktemp(suffix=".yaml")
+    aud = tempfile.mktemp(suffix=".log")
+    cfg = {
+        "version": 1, "location": {"latitude": 41.0, "longitude": -74.0},
+        "user_agent": "x (a@b.com)", "poll_interval_minutes": 15,
+        "precipitation": {"lookback_hours": 24},
+        "mqtt": {"host": "localhost", "port": 1883, "qos": 1, "retain": True},
+        "web": {"enabled": True, "host": "0.0.0.0", "port": 8080, "username": "", "password": ""},
+        "audit_file": aud,
+        "rules": [{"name": "r", "topic": "t", "on_match": "1",
+                   "when": {"metric": "is_raining", "operator": "==", "value": True}}],
+    }
+    open(p, "w").write(yaml.safe_dump(cfg))
+    webui.CONFIG_PATH = p
+    webui.app.config["TESTING"] = True
+    c = webui.app.test_client()
+    try:
+        w.audit(aud, device="pump", state="on", source="auto", by="monitor")
+        r = c.get("/activity")
+        assert r.status_code == 200 and b"Activity" in r.data and b"api/audit" in r.data
+        assert b'href="/activity"' in c.get("/").data        # nav link present
+        j = c.get("/api/audit").get_json()
+        assert j["events"] and j["events"][0]["device"] == "pump"
+    finally:
+        for f in (p, aud):
+            for s in ("", ".bak", ".tmp"):
+                try: os.unlink(f + s)
+                except OSError: pass
+
+
+def test_read_log_parses_levels_and_continuations():
+    import tempfile, os
+    p = tempfile.mktemp(suffix=".log")
+    open(p, "w").write(
+        "2026-06-28 16:40:01,100 INFO Runtime log mirrored to monitor.log\n"
+        "2026-06-28 16:40:02,200 WARNING Rule 'x' failed this cycle, skipping: boom\n"
+        "Traceback (most recent call last):\n"
+        "  File 'a.py', line 1, in <module>\n"
+        "2026-06-28 16:40:03,300 ERROR Poll cycle failed: nope\n")
+    try:
+        lines = w.read_log(p, 100)
+        assert lines[0]["level"] == "ERROR"            # newest first
+        assert lines[1]["level"] == "WARNING"
+        assert "Traceback" in lines[1]["msg"]          # continuation attached
+        assert lines[2]["level"] == "INFO"
+        assert w.read_log("", 100) == []               # disabled -> empty
+        assert w.read_log(tempfile.mktemp(), 100) == []  # missing -> empty
+    finally:
+        os.unlink(p)
+
+
+def test_history_record_read_and_prune():
+    import tempfile, os
+    from datetime import datetime, timezone, timedelta
+    db = tempfile.mktemp(suffix=".db")
+    now = datetime.now(timezone.utc)
+    try:
+        for i in range(6):
+            ts = (now - timedelta(minutes=10 * (6 - i))).isoformat(timespec="seconds")
+            w.record_history(db, {"temperature": 70 + i, "is_raining": i % 2 == 0,
+                                  "short_forecast": "Sunny", "active_alerts": []},
+                             ts=ts, retention_days=14)
+        s = w.read_history(db, hours=24)
+        # numeric + bool(as 0/1) recorded; text/list skipped
+        assert set(s.keys()) == {"temperature", "is_raining"}
+        assert [p[1] for p in s["temperature"]] == [70, 71, 72, 73, 74, 75]
+        assert [p[1] for p in s["is_raining"]] == [1, 0, 1, 0, 1, 0]
+        assert w.history_metrics(db) == ["is_raining", "temperature"]
+        # name filter
+        assert set(w.read_history(db, hours=24, names=["temperature"]).keys()) == {"temperature"}
+        # retention prunes old rows
+        w.record_history(db, {"temperature": 99},
+                         ts=(now - timedelta(days=40)).isoformat(timespec="seconds"),
+                         retention_days=14)
+        assert len(w.read_history(db, hours=24 * 60)["temperature"]) == 6   # 40d-old pruned
+        # a short window keeps only recent points (the 10/20/30 min-old ones)
+        assert len(w.read_history(db, hours=1)["temperature"]) <= 6
+        # missing db / disabled -> empty, never raises
+        assert w.read_history("/nope/x.db") == {}
+        assert w.history_metrics("") == []
+        w.record_history("", {"temperature": 1})  # no-op, no raise
+        # down-sampling caps the point count
+        big = tempfile.mktemp(suffix=".db")
+        for i in range(50):
+            w.record_history(big, {"x": i}, ts=(now - timedelta(minutes=50 - i)).isoformat(timespec="seconds"))
+        assert len(w.read_history(big, hours=24, max_points=10)["x"]) == 10
+        os.unlink(big)
+    finally:
+        try: os.unlink(db)
+        except OSError: pass
+
+
+def test_webui_history_page_and_api():
+    try:
+        import webui
+    except Exception as e:
+        print(f"  SKIP  test_webui_history_page_and_api ({e})")
+        return
+    import tempfile, os, yaml
+    from datetime import datetime, timezone, timedelta
+    p = tempfile.mktemp(suffix=".yaml")
+    db = tempfile.mktemp(suffix=".db")
+    now = datetime.now(timezone.utc)
+    for i in range(5):
+        w.record_history(db, {"temperature": 60 + i, "humidity": 40 + i},
+                         ts=(now - timedelta(minutes=10 * (5 - i))).isoformat(timespec="seconds"))
+    cfg = {"version": 1, "location": {"latitude": 41.0, "longitude": -74.0},
+           "user_agent": "x (a@b.com)", "poll_interval_minutes": 15,
+           "precipitation": {"lookback_hours": 24},
+           "mqtt": {"host": "localhost", "port": 1883, "qos": 1, "retain": True},
+           "web": {"enabled": True, "host": "0.0.0.0", "port": 8080, "username": "", "password": ""},
+           "history": {"enabled": True, "file": db, "retention_days": 14},
+           "rules": [{"name": "r", "topic": "t", "on_match": "1",
+                      "when": {"metric": "is_raining", "operator": "==", "value": True}}]}
+    open(p, "w").write(yaml.safe_dump(cfg))
+    webui.CONFIG_PATH = p
+    webui.app.config["TESTING"] = True
+    c = webui.app.test_client()
+    try:
+        r = c.get("/history")
+        assert r.status_code == 200 and b"History" in r.data and b"api/history" in r.data
+        assert b'href="/history"' in c.get("/").data           # nav link
+        j = c.get("/api/history?hours=24").get_json()
+        assert j["enabled"] is True
+        assert set(j["available"]) == {"humidity", "temperature"}
+        assert [pt[1] for pt in j["series"]["temperature"]] == [60, 61, 62, 63, 64]
+        # Settings exposes the history toggle and round-trips a change
+        assert b"history_enabled" in c.get("/settings").data
+    finally:
+        for f in (p, db):
+            for s in ("", ".bak", ".tmp"):
+                try: os.unlink(f + s)
+                except OSError: pass
+
+
+def test_webui_system_page_and_apis():
+    try:
+        import webui
+    except Exception as e:
+        print(f"  SKIP  test_webui_system_page_and_apis ({e})")
+        return
+    import tempfile, os, json, yaml
+    from datetime import datetime, timezone
+    p = tempfile.mktemp(suffix=".yaml")
+    state = tempfile.mktemp(suffix=".json")
+    log = tempfile.mktemp(suffix=".log")
+    cfg = {
+        "version": 1, "location": {"latitude": 41.0, "longitude": -74.0},
+        "user_agent": "x (a@b.com)", "poll_interval_minutes": 15,
+        "precipitation": {"lookback_hours": 24},
+        "mqtt": {"host": "localhost", "port": 1883, "qos": 1, "retain": True},
+        "web": {"enabled": True, "host": "0.0.0.0", "port": 8080, "username": "", "password": ""},
+        "state_file": state, "log_file": log,
+        "variables": {"maintenance_mode": {"type": "bool", "default": False}},
+        "mqtt_inputs": [{"topic": "s/level", "metric": "tank_level", "parse": "number"}],
+        "rules": [
+            {"name": "r1", "topic": "t1", "on_match": "1",
+             "when": {"metric": "is_raining", "operator": "==", "value": True}},
+            {"name": "r2", "enabled": False, "topic": "t2", "on_match": "1",
+             "when": {"metric": "var_maintenance_mode", "operator": "==", "value": True}},
+        ],
+    }
+    open(p, "w").write(yaml.safe_dump(cfg))
+    # Fresh state snapshot so the monitor reads as "ok".
+    open(state, "w").write(json.dumps({
+        "updated": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "mqtt_connected": True, "manual_control": False, "metrics": {}, "rules": [],
+    }))
+    open(log, "w").write(
+        "2026-06-28 16:40:01,100 INFO Started.\n"
+        "2026-06-28 16:40:02,200 ERROR Poll cycle failed: boom\n")
+    webui.CONFIG_PATH = p
+    webui.app.config["TESTING"] = True
+    c = webui.app.test_client()
+    try:
+        r = c.get("/system")
+        assert r.status_code == 200 and b"System" in r.data and b"api/system" in r.data
+        assert b'href="/system"' in c.get("/").data          # nav link present
+        sysj = c.get("/api/system").get_json()
+        assert sysj["config_ok"] is True and sysj["monitor"] == "ok"
+        assert sysj["mqtt_connected"] is True
+        s = sysj["summary"]
+        assert s["rules_total"] == 2 and s["rules_enabled"] == 1
+        assert s["variables"] == 1 and s["mqtt_inputs"] == 1
+        assert "var_maintenance_mode" not in (sysj.get("error") or "")  # sanity
+        assert s["metrics"] and s["metrics"] > 10                       # catalogue populated
+        assert sysj["log_enabled"] is True and sysj["log_present"] is True
+        logj = c.get("/api/logs").get_json()
+        assert logj["enabled"] is True
+        assert logj["lines"][0]["level"] == "ERROR"                     # newest first
+    finally:
+        for f in (p, state, log):
+            for sfx in ("", ".bak", ".tmp"):
+                try: os.unlink(f + sfx)
+                except OSError: pass
+
+
 def test_single_condition_rule():
     rule = {"name": "freeze", "when": {"metric": "temperature",
                                        "operator": "<=", "value": 35}}
@@ -183,7 +1513,8 @@ def test_validate_config_slack_defaults_and_clamp():
     assert cfg["slack"]["broker_unreachable_minutes"] == 1   # clamped up from 0
     cfg2 = w.validate_config(_min_cfg())
     assert cfg2["slack"] == {"enabled": False, "bot_token": "", "channel": "",
-                             "broker_unreachable_minutes": 60}
+                             "broker_unreachable_minutes": 60,
+                             "stale_weather_minutes": 0}
 
 
 def test_validate_config_status_push_defaults():
@@ -356,6 +1687,25 @@ def test_validate_rejects_missing_user_agent():
         pass
 
 
+def test_validate_version_default_and_accepts_one():
+    # absent -> defaulted to the current schema version (back-compat)
+    cfg = w.validate_config(_min_cfg())
+    assert cfg["version"] == w.CURRENT_SCHEMA_VERSION == 1
+    # explicit version: 1 is accepted unchanged
+    cfg2 = w.validate_config(_min_cfg(version=1))
+    assert cfg2["version"] == 1
+
+
+def test_validate_rejects_unknown_version():
+    # a future v2 file must be rejected clearly, not mis-parsed as v1
+    for bad in (2, 0, "1", True):
+        try:
+            w.validate_config(_min_cfg(version=bad))
+            raise AssertionError(f"expected ValueError for version={bad!r}")
+        except ValueError:
+            pass
+
+
 def test_validate_rejects_empty_rules():
     try:
         w.validate_config(_min_cfg(rules=[]))
@@ -477,7 +1827,8 @@ def test_webui_structured_rule_builder():
     # round-trips back to the editable shape
     struct = webui._rule_to_structured(parsed[0])
     assert struct["combine"] == "any" and len(struct["conditions"]) == 2
-    assert struct["conditions"][0] == {"metric": "is_raining", "operator": "==", "value": "true"}
+    assert struct["conditions"][0] == {"metric": "is_raining", "operator": "==",
+                                       "value": "true", "value_metric": "", "for": ""}
 
     # rejections
     for bad, needle in [
@@ -497,6 +1848,482 @@ def test_webui_structured_rule_builder():
             raise AssertionError(f"expected rejection containing {needle!r}")
         except ValueError as e:
             assert needle in str(e), f"got {e!r}, wanted {needle!r}"
+
+
+def test_webui_builder_advanced_constructs():
+    """The form builder round-trips the constructs added in Phase 1: between/in,
+    the value-less `changed` operator, a per-condition `for:` sustain, and a
+    disabled rule -- producing YAML the monitor accepts."""
+    try:
+        import webui
+    except Exception as e:
+        print(f"  SKIP  test_webui_builder_advanced_constructs ({e})")
+        return
+    import yaml, copy
+
+    items = [
+        {"name": "comfort", "topic": "f/comfort", "on_match": "ON", "on_clear": "OFF",
+         "enabled": True, "combine": "all", "conditions": [
+             {"metric": "temperature", "operator": "between", "value": "40, 80", "for": "10m"},
+             {"metric": "humidity", "operator": "in", "value": "30, 50, 70", "for": ""},
+         ]},
+        {"name": "alert_pulse", "topic": "f/pulse", "on_match": "1", "enabled": True,
+         "combine": "any", "conditions": [
+             {"metric": "temperature", "operator": "changed", "value": "", "for": ""}]},
+        {"name": "off_rule", "topic": "f/off", "on_match": "X", "enabled": False,
+         "combine": "any", "conditions": [
+             {"metric": "wind_speed_mph", "operator": ">", "value": "25", "for": ""}]},
+    ]
+    built = webui._rules_from_structured(items)
+    parsed = yaml.safe_load(webui.dump_raw({"rules": built}))["rules"]
+
+    assert parsed[0]["when"]["all"][0]["value"] == [40, 80]          # between -> list
+    assert parsed[0]["when"]["all"][0]["for"] == "10m"               # for preserved
+    assert parsed[0]["when"]["all"][1]["value"] == [30, 50, 70]      # in -> numeric list
+    assert parsed[1]["when"]["operator"] == "changed"
+    assert "value" not in parsed[1]["when"]                          # changed -> no value
+    assert parsed[2]["enabled"] is False                             # disabled preserved
+    assert "enabled" not in parsed[0]                                # default-on stays clean
+    # the monitor accepts what the builder produced
+    w.validate_config(copy.deepcopy({
+        "location": {"latitude": 1, "longitude": 2}, "user_agent": "x (a@b)",
+        "mqtt": {}, "rules": parsed}))
+
+    # round-trips back to the editable shape
+    s0 = webui._rule_to_structured(parsed[0])
+    assert s0["conditions"][0] == {"metric": "temperature", "operator": "between",
+                                   "value": "40, 80", "value_metric": "", "for": "10m"}
+    assert webui._rule_to_structured(parsed[2])["enabled"] is False
+
+    # rejections surface clearly
+    for bad, needle in [
+        ([{"name": "r", "topic": "t", "on_match": "x", "combine": "any", "conditions": [
+            {"metric": "temperature", "operator": "between", "value": "40", "for": ""}]}], "two numbers"),
+        ([{"name": "r", "topic": "t", "on_match": "x", "combine": "any", "conditions": [
+            {"metric": "humidity", "operator": "in", "value": "", "for": ""}]}], "at least one"),
+        ([{"name": "r", "topic": "t", "on_match": "x", "combine": "any", "conditions": [
+            {"metric": "temperature", "operator": ">", "value": "5", "for": "soon"}]}], "valid duration"),
+    ]:
+        try:
+            webui._rules_from_structured(bad)
+            raise AssertionError(f"expected rejection containing {needle!r}")
+        except ValueError as e:
+            assert needle in str(e), f"got {e!r}, wanted {needle!r}"
+
+
+def test_computed_pow_dos_guard():
+    # `9**9**9` (all-integer) never raises OverflowError and would otherwise hang
+    # the single-threaded control loop forever. It must return None ~instantly.
+    import time
+    t0 = time.monotonic()
+    assert w.compute_metrics({"boom": {"expr": "9**9**9"}}, {}) == {"boom": None}
+    assert time.monotonic() - t0 < 1.0
+    assert w.compute_metrics({"p": {"expr": "2**10"}}, {})["p"] == 1024
+    assert w.compute_metrics({"p": {"expr": "10**400"}}, {})["p"] is None   # overflow
+    assert w.compute_metrics({"p": {"expr": "metric**2"}},
+                             {"metric": 4})["p"] == 16
+    # A negative base with a fractional exponent is complex, not a real number:
+    # must be None so a downstream comparison can't TypeError and freeze the rule.
+    assert w.compute_metrics({"p": {"expr": "(0-2)**0.5"}}, {})["p"] is None
+
+
+def test_numeric_value_coerced_at_validation():
+    # A quoted YAML number ("5") must be normalized to a real number so the engine
+    # never does `current < "5"` (a TypeError that would freeze the rule).
+    cfg = w.validate_config(_min_cfg(rules=[{
+        "name": "r", "topic": "t", "on_match": "ON",
+        "when": {"metric": "temperature", "operator": "<", "value": "5"}}]))
+    cond = cfg["rules"][0]["when"]
+    assert cond["value"] == 5 and not isinstance(cond["value"], str)
+    assert w.evaluate_rule(cfg["rules"][0], {"temperature": 3.0}) is True
+    assert w.evaluate_rule(cfg["rules"][0], {"temperature": 9.0}) is False
+    # between bounds and `in` items coerce too
+    cfg2 = w.validate_config(_min_cfg(rules=[{
+        "name": "r", "topic": "t", "on_match": "ON",
+        "when": {"metric": "temperature", "operator": "between",
+                 "value": ["40", "80"]}}]))
+    assert cfg2["rules"][0]["when"]["value"] == [40, 80]
+
+
+def test_engine_state_save_load_roundtrip():
+    import tempfile, os
+    from datetime import datetime, timezone
+    esf = tempfile.mktemp(suffix=".json")
+    es = w.EngineState()
+    key = "rule|is_raining|==|True|10m"
+    es.cond_since[key] = datetime(2026, 6, 28, 12, 0, tzinfo=timezone.utc)
+    es.prev_metrics = {"temperature": 60.0, "is_raining": True, "active_alerts": []}
+    try:
+        w.save_engine_state(esf, {"r": True, "skip": None},
+                            {"r": "2026-06-28T11:00:00+00:00"}, es)
+        ls, lc, es2 = w.load_engine_state(esf)
+        assert ls == {"r": True}                                  # None dropped
+        assert lc == {"r": "2026-06-28T11:00:00+00:00"}
+        assert es2.prev_metrics["temperature"] == 60.0
+        assert es2.cond_since[key] == datetime(2026, 6, 28, 12, 0, tzinfo=timezone.utc)
+        # corrupt + missing files both yield a clean cold start (never raise)
+        open(esf, "w").write("{ broken")
+        ls3, lc3, es3 = w.load_engine_state(esf)
+        assert ls3 == {} and lc3 == {} and es3.cond_since == {}
+        assert w.load_engine_state(tempfile.mktemp())[0] == {}
+    finally:
+        for s in ("", ".tmp"):
+            try: os.unlink(esf + s)
+            except OSError: pass
+
+
+def test_engine_state_persists_and_republishes_across_restart():
+    # End-to-end: state survives a restart (no spurious re-publish when unchanged),
+    # and a (re)connect's republish flag re-asserts the retained directive.
+    import tempfile, os, sys, threading, json, yaml
+    p = tempfile.mktemp(suffix=".yaml")
+    state = tempfile.mktemp(suffix=".json"); aud = tempfile.mktemp(suffix=".log")
+    logf = tempfile.mktemp(suffix=".log"); esf = tempfile.mktemp(suffix=".json")
+    cfg = {"version": 1, "location": {"latitude": 41.0, "longitude": -74.0},
+           "user_agent": "x (a@b.com)", "poll_interval_minutes": 15,
+           "precipitation": {"lookback_hours": 24},
+           "mqtt": {"host": "localhost", "port": 1883, "qos": 1, "retain": True,
+                    "availability_topic": ""},
+           "state_file": state, "audit_file": aud, "log_file": logf,
+           "engine_state_file": esf, "history": {"enabled": False},
+           "rules": [{"name": "rainflag", "topic": "facility/rain",
+                      "on_match": "ON", "on_clear": "OFF",
+                      "when": {"metric": "is_raining", "operator": "==",
+                               "value": True}}]}
+    open(p, "w").write(yaml.safe_dump(cfg))
+    orig = (w.resolve_location, w.fetch_conditions, w.make_mqtt_client, sys.argv)
+    pubs = []
+
+    class _Info: rc = 0
+    class _Fake:
+        republish = False
+        def __init__(self):
+            self.in_lock = threading.Lock()
+            self.republish_event = threading.Event()
+            if _Fake.republish:
+                self.republish_event.set()
+        def publish(self, topic, payload, **k): pubs.append((topic, payload)); return _Info()
+        def is_connected(self): return True
+        def connect_async(self, *a, **k): pass
+        def loop_start(self): pass
+        def loop_stop(self): pass
+        def disconnect(self): pass
+    try:
+        w.resolve_location = lambda *a, **k: {"office": "x"}
+        w.fetch_conditions = lambda *a, **k: {
+            "temperature": 60.0, "humidity": 80.0, "wind_speed_mph": 5.0,
+            "is_raining": True, "precip_accum_in": 0.3,
+            "precipitation_probability": 90.0, "short_forecast": "Rain",
+            "active_alerts": []}
+        w.make_mqtt_client = lambda *a, **k: _Fake()
+        sys.argv = ["weather_mqtt", "--config", p, "--once"]
+        w.main()                                          # cold start -> ON
+        assert ("facility/rain", "ON") in pubs
+        assert json.loads(open(esf).read())["last_state"]["rainflag"] is True
+        pubs.clear(); w.main()                            # restart, unchanged -> silent
+        assert ("facility/rain", "ON") not in pubs
+        pubs.clear(); _Fake.republish = True; w.main()    # reconnect -> re-assert
+        assert ("facility/rain", "ON") in pubs
+    finally:
+        w.resolve_location, w.fetch_conditions, w.make_mqtt_client, sys.argv = orig
+        for f in (p, state, aud, logf, esf):
+            for s in ("", ".bak", ".tmp"):
+                try: os.unlink(f + s)
+                except OSError: pass
+
+
+def test_webui_request_size_cap_configured():
+    try:
+        import webui
+    except Exception as e:
+        print(f"  SKIP  test_webui_request_size_cap_configured ({e})")
+        return
+    # A request-body cap must be set so an oversized POST can't OOM the dashboard.
+    assert webui.app.config.get("MAX_CONTENT_LENGTH") == 1024 * 1024
+    # save_config routes through the core atomic+fsync writer.
+    assert hasattr(webui.core, "_atomic_write")
+
+
+def test_engine_state_resets_sustain_timers_after_long_gap():
+    import tempfile, os, json
+    from datetime import datetime, timezone, timedelta
+    from pathlib import Path
+    esf = tempfile.mktemp(suffix=".json")
+    now = datetime(2026, 6, 28, 12, 0, tzinfo=timezone.utc)
+    key = "rule|is_raining|==|True|10m"
+    base = {"last_state": {"r": True},
+            "last_change": {"r": "2026-06-28T11:00:00+00:00"},
+            "cond_since": {key: "2026-06-28T10:00:00+00:00"}, "prev_metrics": {}}
+    try:
+        # Saved an hour ago: beyond the grace window -> `for:` sustain timers
+        # re-accrue (can't prove continuity across the gap), but last_state /
+        # last_change ARE restored (those are genuine wall-clock).
+        Path(esf).write_text(json.dumps(
+            {**base, "saved_at": (now - timedelta(hours=1)).isoformat()}))
+        ls, lc, es = w.load_engine_state(esf, now=now)
+        assert es.cond_since == {}
+        assert ls == {"r": True} and lc == {"r": "2026-06-28T11:00:00+00:00"}
+        # Saved 30s ago: a quick restart keeps the sustain timers.
+        Path(esf).write_text(json.dumps(
+            {**base, "saved_at": (now - timedelta(seconds=30)).isoformat()}))
+        _, _, es2 = w.load_engine_state(esf, now=now)
+        assert key in es2.cond_since
+        # Legacy file with no saved_at: conservatively don't trust sustain timers.
+        Path(esf).write_text(json.dumps(base))
+        _, _, es3 = w.load_engine_state(esf, now=now)
+        assert es3.cond_since == {}
+    finally:
+        for s in ("", ".tmp"):
+            try: os.unlink(esf + s)
+            except OSError: pass
+
+
+def test_coerce_payload_bool_holds_on_unknown():
+    assert w.coerce_payload(b"on", "bool") is True
+    assert w.coerce_payload(b"off", "bool") is False
+    # An unrecognized payload holds (None) rather than fabricating a real "off".
+    assert w.coerce_payload(b"maybe", "bool") is None
+    store, tmap = {}, {"t": {"topic": "t", "metric": "m", "parse": "bool"}}
+    assert w.handle_mqtt_input(store, tmap, "t", b"maybe") is False
+    assert store == {}
+
+
+class _Resp:
+    def __init__(self, status, body=None, retry_after=None, bad_json=False):
+        self.status_code = status
+        self._body = {"ok": True} if body is None else body
+        self._bad = bad_json
+        self.headers = {}
+        if retry_after is not None:
+            self.headers["Retry-After"] = retry_after
+    def json(self):
+        if self._bad:
+            raise ValueError("not json")
+        return self._body
+
+
+class _Sess:
+    def __init__(self, seq): self.seq = list(seq); self.calls = 0
+    def get(self, url, headers=None, timeout=None):
+        self.calls += 1
+        r = self.seq.pop(0)
+        if isinstance(r, Exception):
+            raise r
+        return r
+
+
+def test_nws_get_retries_failfast_and_retry_after():
+    real = w._SESSION
+    try:
+        # 503 (Retry-After: 0 -> no real sleep) then 200 -> returns after one retry
+        s = _Sess([_Resp(503, retry_after="0"), _Resp(200, {"v": 1})])
+        w._SESSION = s
+        assert w.nws_get("http://x", "ua", retries=3) == {"v": 1}
+        assert s.calls == 2
+        # 404 is non-retryable: fail fast, exactly one call
+        s2 = _Sess([_Resp(404)])
+        w._SESSION = s2
+        try:
+            w.nws_get("http://x", "ua", retries=3); assert False, "should raise"
+        except RuntimeError:
+            pass
+        assert s2.calls == 1
+        # 200 but non-JSON body -> RuntimeError, no retry
+        s3 = _Sess([_Resp(200, bad_json=True)])
+        w._SESSION = s3
+        try:
+            w.nws_get("http://x", "ua", retries=3); assert False, "should raise"
+        except RuntimeError:
+            pass
+        assert s3.calls == 1
+    finally:
+        w._SESSION = real
+
+
+def test_retry_after_seconds_parsing():
+    class _R:
+        def __init__(self, h): self.headers = h
+    assert w._retry_after_seconds(_R({"Retry-After": "5"}), 2) == 5
+    assert w._retry_after_seconds(_R({}), 2) == 2
+    assert w._retry_after_seconds(_R({"Retry-After": "99999"}), 2) == 300   # capped
+    # HTTP-date form is unparsed here -> fall back to our own backoff default
+    assert w._retry_after_seconds(
+        _R({"Retry-After": "Wed, 21 Oct 2099 07:28:00 GMT"}), 2) == 2
+
+
+def test_location_cache_validation_reresolves_on_partial():
+    import tempfile, os, json
+    from pathlib import Path
+    real_cache, real_get = w.CACHE_FILE, w.nws_get
+    cf = Path(tempfile.mktemp(suffix=".json"))
+    calls = {"n": 0}
+
+    def fake_get(url, ua, **k):
+        calls["n"] += 1
+        if "/points/" in url:
+            return {"properties": {"forecastHourly": "https://f",
+                                   "observationStations": "https://s", "gridId": "X"}}
+        return {"features": [{"properties": {"stationIdentifier": "KXYZ"}}]}
+    try:
+        w.CACHE_FILE = cf
+        w.nws_get = fake_get
+        # A partial cache (matches location but missing the URLs) must NOT be
+        # trusted -- re-resolve instead of feeding dead URLs to every cycle.
+        cf.write_text(json.dumps({"lat": 1, "lon": 2, "station_override": None}))
+        info = w.resolve_location(1, 2, "ua")
+        assert info["station_id"] == "KXYZ" and calls["n"] >= 1
+        # A complete cache (written atomically by resolve_location) is trusted.
+        calls["n"] = 0
+        info2 = w.resolve_location(1, 2, "ua")
+        assert calls["n"] == 0 and info2["forecast_hourly"] == "https://f"
+    finally:
+        w.CACHE_FILE, w.nws_get = real_cache, real_get
+        for s in ("", ".tmp"):
+            try: os.unlink(str(cf) + s)
+            except OSError: pass
+
+
+def test_coerce_value_bool_holds_on_unknown():
+    assert w.coerce_value("off", "bool") is False
+    assert w.coerce_value("on", "bool") is True
+    assert w.coerce_value(0, "bool") is False
+    # an unexpected present value must hold (None), not fabricate a real "off"
+    assert w.coerce_value("weird", "bool") is None
+    assert w.coerce_value({"x": 1}, "bool") is None
+
+
+def test_atomic_write_roundtrip():
+    import tempfile, os
+    from pathlib import Path
+    p = Path(tempfile.mktemp(suffix=".txt"))
+    try:
+        w._atomic_write(p, "hello", fsync=True)
+        assert p.read_text() == "hello"
+        assert not Path(str(p) + ".tmp").exists()
+        w._atomic_write(p, "world", fsync=False)       # overwrite
+        assert p.read_text() == "world"
+    finally:
+        for s in ("", ".tmp"):
+            try: os.unlink(str(p) + s)
+            except OSError: pass
+
+
+def test_history_uses_wal_mode():
+    import tempfile, os
+    db = tempfile.mktemp(suffix=".db")
+    try:
+        w.record_history(db, {"temperature": 60.0})
+        con = w._history_connect(db)
+        mode = con.execute("PRAGMA journal_mode").fetchone()[0]
+        con.close()
+        assert mode.lower() == "wal"
+    finally:
+        for s in ("", "-wal", "-shm"):
+            try: os.unlink(db + s)
+            except OSError: pass
+
+
+class _FakeInfo:
+    def __init__(self, rc=0): self.rc = rc
+    def wait_for_publish(self, timeout=None): return True
+
+
+class _FakePahoClient:
+    """Records will/tls/subscribe/publish so make_mqtt_client wiring is testable
+    without a broker."""
+    def __init__(self, **kwargs):
+        self.subs, self.pubs = [], []
+        self.will = None
+        self.tls = None
+        self.tls_insecure = None
+        self.on_connect = self.on_disconnect = self.on_message = None
+    def username_pw_set(self, *a, **k): pass
+    def will_set(self, topic, payload=None, qos=0, retain=False):
+        self.will = (topic, payload, qos, retain)
+    def tls_set(self, **k): self.tls = k
+    def tls_insecure_set(self, v): self.tls_insecure = v
+    def subscribe(self, t): self.subs.append(t)
+    def publish(self, topic, payload, qos=0, retain=False):
+        self.pubs.append((topic, payload, qos, retain)); return _FakeInfo()
+    def reconnect_delay_set(self, **k): pass
+
+
+class _FakeMqttModule:
+    Client = _FakePahoClient
+    MQTT_ERR_SUCCESS = 0
+    class CallbackAPIVersion:
+        VERSION2 = 2
+
+
+def _with_fake_mqtt(fn):
+    real = w.mqtt
+    w.mqtt = _FakeMqttModule
+    try:
+        return fn()
+    finally:
+        w.mqtt = real
+
+
+def test_mqtt_last_will_birth_and_republish():
+    # An availability topic must arm an LWT ("offline", retained) and, on a
+    # successful connect, publish the "online" birth message, (re)subscribe, set
+    # the republish flag and wake the loop.
+    def body():
+        woke = []
+        mq = {"client_id": "c", "host": "h", "port": 1883,
+              "availability_topic": "av/status"}
+        client = w.make_mqtt_client(
+            mq, [{"topic": "s/tank", "metric": "tank", "parse": "number"}],
+            {}, on_input=lambda: None, on_reconnect=lambda: woke.append(1))
+        assert client.will == ("av/status", "offline", 1, True)
+        assert hasattr(client, "in_lock")          # cross-thread lock present
+        assert not client.republish_event.is_set()
+
+        class _RC: is_failure = False
+        client.on_connect(client, None, None, _RC(), None)
+        assert ("av/status", "online", 1, True) in client.pubs   # birth message
+        assert "s/tank" in client.subs                           # resubscribed
+        assert client.republish_event.is_set()                   # re-assert asked
+        assert woke == [1]                                        # loop woken
+    _with_fake_mqtt(body)
+
+
+def test_mqtt_no_availability_no_will():
+    # With availability disabled (""), no LWT is armed and no birth/offline noise.
+    def body():
+        mq = {"client_id": "c", "host": "h", "port": 1883, "availability_topic": ""}
+        client = w.make_mqtt_client(mq, [], {})
+        assert client.will is None
+
+        class _RC: is_failure = False
+        client.on_connect(client, None, None, _RC(), None)
+        assert client.pubs == []
+    _with_fake_mqtt(body)
+
+
+def test_mqtt_tls_applied_when_enabled():
+    def body():
+        mq = {"client_id": "c", "host": "h", "port": 8883,
+              "availability_topic": "",
+              "tls": {"enabled": True, "ca_certs": "/x/ca.pem", "insecure": True}}
+        client = w.make_mqtt_client(mq, [], {})
+        assert client.tls is not None                 # tls_set was called
+        assert client.tls.get("ca_certs") == "/x/ca.pem"
+        assert client.tls_insecure is True
+        # ...and disabled/absent TLS leaves the socket plaintext.
+        plain = w.make_mqtt_client({"client_id": "c2", "host": "h", "port": 1883,
+                                    "availability_topic": ""}, [], {})
+        assert plain.tls is None
+    _with_fake_mqtt(body)
+
+
+def test_mqtt_config_defaults_availability_and_tls():
+    cfg = w.validate_config(_min_cfg())
+    assert cfg["mqtt"]["availability_topic"] == "weather-mqtt/status"
+    # tls is opt-in: absent unless configured, and normalized when present.
+    assert "tls" not in cfg["mqtt"] or cfg["mqtt"]["tls"]["enabled"] is False
+    cfg2 = w.validate_config(_min_cfg(mqtt={"tls": {"enabled": "yes"}}))
+    assert cfg2["mqtt"]["tls"]["enabled"] is True
 
 
 def run():

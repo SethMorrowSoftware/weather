@@ -4,18 +4,23 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="dark light">
-<title>Dashboard · Precipitation → MQTT</title>
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%8C%A7%3C/text%3E%3C/svg%3E">
+<title>Dashboard · The Castle Fun Center</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%8F%B0%3C/text%3E%3C/svg%3E">
 <link rel="stylesheet" href="assets/style.css">
 </head>
 <body>
 <div class="banner">📦 <b>Static demo</b> — sample data, nothing is published or saved. The live app is <code>webui.py</code>.</div>
 <header>
-  <h1><span class="logo">🌧</span> Precipitation → MQTT</h1>
+  <h1><span class="logo">🏰</span> The Castle Fun Center <span style="font-weight:500;color:var(--muted2);font-size:12px;letter-spacing:.02em">· MQTT Command Center</span></h1>
   <nav>
     <a href="index.html" class="active">Dashboard</a>
     <a href="settings.html">Settings</a>
     <a href="rules.html">Rules</a>
+    <a href="inputs.html">Inputs</a>
+    <a href="mqtt.html">MQTT</a>
+    <a href="activity.html">Activity</a>
+    <a href="history.html">History</a>
+    <a href="system.html">System</a>
   </nav>
   <span class="spacer"></span>
   <span class="conn" id="connstate"><span class="dot idle"></span>weather-mqtt</span>
@@ -23,7 +28,7 @@
 
 <main id="dash" class="loading">
   <div class="card" id="directive-card">
-    <div class="eyebrow">Irrigation directive</div>
+    <div class="eyebrow">Headline device</div>
     <div class="big unknown" id="directive">…</div>
     <div class="muted" id="directive-sub">Loading current conditions…</div>
   </div>
@@ -58,20 +63,30 @@
     <p class="muted" style="margin-top:14px" id="forecast">—</p>
   </div>
 
+  <div class="card" id="vars-card" style="display:none">
+    <div class="eyebrow" style="margin-bottom:10px">Variables</div>
+    <div class="grid" id="vars-body"></div>
+  </div>
+
   <div class="card">
-    <div class="eyebrow" style="margin-bottom:10px">Rules</div>
-    <div class="table-wrap">
-      <table>
-        <thead><tr><th>Rule</th><th>Topic</th><th>State</th><th>Payload</th><th>Last change</th></tr></thead>
-        <tbody id="rulebody"><tr><td colspan="5" class="muted">Loading…</td></tr></tbody>
-      </table>
+    <div class="toprow" style="align-items:center">
+      <div class="eyebrow">Devices</div>
+      <div class="muted" style="display:flex;gap:7px;align-items:center;flex-wrap:wrap">
+        <span class="pill on">active</span><span class="pill off">clear</span>
+        <span class="pill na">disabled / n/a</span>
+      </div>
+    </div>
+    <p class="muted" style="margin:6px 0 0">Manual control is <b>on</b> in this demo — use the
+      <b>Auto / On / Off</b> buttons to override a device, or toggle a variable above.</p>
+    <div class="grid" id="devicegrid" style="grid-template-columns:repeat(auto-fill,minmax(230px,1fr));margin-top:12px">
+      <div class="muted">Loading…</div>
     </div>
   </div>
 
   <p class="muted">Live — updates every few seconds. <span id="staleness"></span></p>
 </main>
 
-<footer>Precipitation → MQTT controller · demo build · data source: National Weather Service (api.weather.gov)</footer>
+<footer>The Castle Fun Center · MQTT Command Center · demo build · data source: National Weather Service (api.weather.gov) · <a href="https://github.com/SethMorrowSoftware/mqtt-dev" target="_blank" rel="noopener">Docs ↗</a></footer>
 <div id="toast"></div>
 <script src="assets/app.js"></script>
 </body>

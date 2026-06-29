@@ -82,6 +82,9 @@ def _render(c):
 # Data source: National Weather Service (api.weather.gov) -- US only, no key.
 # ===========================================================================
 
+# Config schema version (leave at 1; v2 lands later -- see ROADMAP.md).
+version: 1
+
 # --- Your facility's location (decimal degrees) ----------------------------
 location:
   latitude: {c['lat']}

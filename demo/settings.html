@@ -4,24 +4,37 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="dark light">
-<title>Settings · Precipitation → MQTT</title>
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%8C%A7%3C/text%3E%3C/svg%3E">
+<title>Settings · The Castle Fun Center</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%8F%B0%3C/text%3E%3C/svg%3E">
 <link rel="stylesheet" href="assets/style.css">
 </head>
 <body>
 <div class="banner">📦 <b>Static demo</b> — the form validates in your browser but does not save anything.</div>
 <header>
-  <h1><span class="logo">🌧</span> Precipitation → MQTT</h1>
+  <h1><span class="logo">🏰</span> The Castle Fun Center <span style="font-weight:500;color:var(--muted2);font-size:12px;letter-spacing:.02em">· MQTT Command Center</span></h1>
   <nav>
     <a href="index.html">Dashboard</a>
     <a href="settings.html" class="active">Settings</a>
     <a href="rules.html">Rules</a>
+    <a href="inputs.html">Inputs</a>
+    <a href="mqtt.html">MQTT</a>
+    <a href="activity.html">Activity</a>
+    <a href="history.html">History</a>
+    <a href="system.html">System</a>
   </nav>
   <span class="spacer"></span>
   <span class="conn"><span class="dot up"></span>MQTT connected</span>
 </header>
 
 <main>
+<div class="card" style="background:linear-gradient(180deg,#0e1a2e,#0e1828)">
+  <h3 style="margin:0 0 4px">Settings</h3>
+  <p class="muted" style="margin:0">Configure the controller. Everything is <b>validated before saving</b> —
+   out-of-range values are rejected and nothing is written. Thresholds, the lookback window, the poll
+   interval, MQTT publish options and rules apply on the <b>next poll</b>; changing <b>location</b>, the
+   <b>MQTT connection</b>, or any <b>web</b> setting needs a service restart. Passwords/tokens are never
+   shown back — leave a field blank to keep the stored value.</p>
+</div>
 <form id="settings-form" autocomplete="off" novalidate>
   <div class="card">
     <h3>Location &amp; polling</h3>
@@ -50,6 +63,14 @@
       <div><label>Always publish <span class="hint">(re-send every cycle as a heartbeat)</span></label>
         <select name="always_publish"><option value="false">false</option><option value="true">true</option></select>
         <div class="field-err"></div></div>
+    </div>
+    <div class="row">
+      <div><label>Event-driven re-evaluation <span class="hint">(re-run rules the instant an MQTT input changes)</span></label>
+        <select name="event_driven">
+          <option value="true">on (react immediately; needs a restart)</option>
+          <option value="false">off (only re-evaluate each poll cycle)</option>
+        </select><div class="field-err"></div></div>
+      <div></div>
     </div>
   </div>
 
@@ -104,6 +125,23 @@
   </div>
 
   <div class="card">
+    <h3>Remote status page</h3>
+    <p class="muted">Push a read-only copy of the status to an external dashboard each cycle
+      (see <code>cloud-status/</code>). <b>Outbound only</b> — nothing can reach back in, no remote control.</p>
+    <div class="row">
+      <div><label>Enabled</label>
+        <select name="status_push_enabled"><option value="false">false</option><option value="true">true</option></select>
+        <div class="field-err"></div></div>
+      <div><label>Shared token <span class="hint">(sent as X-Status-Token; matches ingest.php)</span></label>
+        <input name="status_push_token" type="password" value="" autocomplete="new-password" placeholder="a long random secret">
+        <div class="field-err"></div></div>
+    </div>
+    <div><label>Endpoint URL <span class="hint">(your dashboard's ingest.php)</span></label>
+      <input name="status_push_url" value="" placeholder="https://dashboards.example.com/weather/ingest.php">
+      <div class="field-err"></div></div>
+  </div>
+
+  <div class="card">
     <h3>Web interface</h3>
     <div class="row">
       <div><label>Bind host <span class="hint">(0.0.0.0 = all, 127.0.0.1 = local only)</span></label>
@@ -114,10 +152,21 @@
     </div>
     <div class="row">
       <div><label>Login username <span class="hint">(blank = no auth)</span></label>
-        <input name="web_username" value="" autocomplete="off"><div class="field-err"></div></div>
+        <input name="web_username" value="admin" autocomplete="off"><div class="field-err"></div></div>
       <div><label>Login password</label>
-        <input name="web_password" type="password" value="" autocomplete="new-password"><div class="field-err"></div></div>
+        <input name="web_password" type="password" value="" autocomplete="new-password"
+          placeholder="•••••• — set to enable login"><div class="field-err"></div></div>
     </div>
+    <div class="row">
+      <div><label>Manual device control <span class="hint">(Auto/On/Off buttons on the dashboard)</span></label>
+        <select name="web_allow_manual_control">
+          <option value="false">off (display only)</option>
+          <option value="true" selected>on (requires a login)</option>
+        </select><div class="field-err"></div></div>
+      <div></div>
+    </div>
+    <p class="muted">Manual control lets an authenticated operator force a device ON/OFF from the
+      dashboard (LAN-only, audited). It requires a login; the remote status page stays read-only.</p>
     <p class="muted">⚠ Changing <b>location</b>, the <b>MQTT connection</b>, or any <b>web interface</b>
       setting restarts the corresponding service in the live app. Thresholds, lookback, poll interval,
       QoS, retain, status topic and rules apply on the next poll automatically.</p>
@@ -126,7 +175,7 @@
 </form>
 </main>
 
-<footer>Precipitation → MQTT controller · demo build</footer>
+<footer>The Castle Fun Center · MQTT Command Center · demo build · <a href="https://github.com/SethMorrowSoftware/mqtt-dev" target="_blank" rel="noopener">Docs ↗</a></footer>
 <div id="toast"></div>
 <script src="assets/app.js"></script>
 </body>

@@ -1,6 +1,8 @@
 [Unit]
 Description=Precipitation-driven MQTT controller (NWS / weather.gov)
-After=network-online.target
+# Order after the broker when it's on the same host (ignored if mosquitto isn't
+# installed -- we don't hard-Require it so an external broker still works).
+After=network-online.target mosquitto.service
 Wants=network-online.target
 
 [Service]
@@ -8,8 +10,19 @@ Type=simple
 User=weather
 WorkingDirectory=/opt/weather-mqtt
 ExecStart=/opt/weather-mqtt/venv/bin/python /opt/weather-mqtt/weather_mqtt.py --config /opt/weather-mqtt/config.yaml
-Restart=on-failure
+# An always-on controller should come back from any exit, not just failures.
+Restart=always
 RestartSec=10
+# Reap a process that ignores SIGTERM (e.g. wedged mid-fetch). All on-disk
+# writes are atomic, so a SIGKILL here can't corrupt state.
+TimeoutStopSec=20
+
+# --- Hardening: a network-reachable service shouldn't have the whole FS ---
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/opt/weather-mqtt
 
 [Install]
 WantedBy=multi-user.target

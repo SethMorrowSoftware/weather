@@ -5,12 +5,13 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "weather-mqtt"
 version = "1.0.0"
-description = "Watch rainfall from the National Weather Service and publish MQTT directives so irrigation PLCs know when not to water."
+description = "A web-configurable conditions->actions controller that turns weather, schedule, operator, MQTT and HTTP inputs into on/off MQTT directives (irrigation rain-inhibit is the default preset)."
 readme = "README.md"
 requires-python = ">=3.9"
 license = { text = "MIT" }
 authors = [{ name = "Seth Morrow Software" }]
-keywords = ["mqtt", "weather", "nws", "irrigation", "precipitation", "home-automation"]
+keywords = ["mqtt", "weather", "nws", "irrigation", "precipitation", "home-automation",
+            "automation", "rules-engine", "scheduling"]
 classifiers = [
     "Programming Language :: Python :: 3",
     "Topic :: Home Automation",
@@ -36,8 +37,8 @@ weather-webui = "webui:main"
 weather-mqtt-setup = "setup_wizard:main"
 
 [project.urls]
-Homepage = "https://github.com/SethMorrowSoftware/weather"
-Repository = "https://github.com/SethMorrowSoftware/weather"
+Homepage = "https://github.com/SethMorrowSoftware/mqtt-dev"
+Repository = "https://github.com/SethMorrowSoftware/mqtt-dev"
 
 [tool.setuptools]
 py-modules = ["weather_mqtt", "webui", "setup_wizard"]

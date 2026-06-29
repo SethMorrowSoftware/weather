@@ -4,14 +4,14 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="dark light">
-<title>Irrigation status · Precipitation → MQTT</title>
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%8C%A7%3C/text%3E%3C/svg%3E">
+<title>Status · The Castle Fun Center</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%8F%B0%3C/text%3E%3C/svg%3E">
 <link rel="stylesheet" href="assets/style.css">
 </head>
 <body>
 <div class="banner">🔒 <b>Read‑only status</b> — live view pushed from the on‑site controller. No controls here.</div>
 <header>
-  <h1><span class="logo">🌧</span> Precipitation → MQTT</h1>
+  <h1><span class="logo">🏰</span> The Castle Fun Center <span style="font-weight:500;color:var(--muted2);font-size:12px;letter-spacing:.02em">· MQTT Command Center</span></h1>
   <span class="spacer"></span>
   <span class="conn" id="connstate"><span class="dot idle"></span>connecting…</span>
 </header>
@@ -20,7 +20,7 @@
   <div id="stale" class="msg err" style="display:none"></div>
 
   <div class="card" id="directive-card">
-    <div class="eyebrow">Irrigation directive</div>
+    <div class="eyebrow">Headline device</div>
     <div class="big unknown" id="directive">…</div>
     <div class="muted" id="directive-sub">Loading latest status…</div>
   </div>
@@ -54,7 +54,7 @@
   <p class="muted">Read‑only · refreshes every 30s · <span id="src">status.json</span></p>
 </main>
 
-<footer>Precipitation → MQTT controller · read‑only status mirror</footer>
+<footer>The Castle Fun Center · MQTT Command Center · read‑only status mirror</footer>
 <script src="assets/app.js"></script>
 </body>
 </html>

@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark light">
+<title>History · The Castle Fun Center</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%8F%B0%3C/text%3E%3C/svg%3E">
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+<div class="banner">📦 <b>Static demo</b> — sample trend data, generated in your browser. The live app charts <code>history.db</code>.</div>
+<header>
+  <h1><span class="logo">🏰</span> The Castle Fun Center <span style="font-weight:500;color:var(--muted2);font-size:12px;letter-spacing:.02em">· MQTT Command Center</span></h1>
+  <nav>
+    <a href="index.html">Dashboard</a>
+    <a href="settings.html">Settings</a>
+    <a href="rules.html">Rules</a>
+    <a href="inputs.html">Inputs</a>
+    <a href="mqtt.html">MQTT</a>
+    <a href="activity.html">Activity</a>
+    <a href="history.html" class="active">History</a>
+    <a href="system.html">System</a>
+  </nav>
+  <span class="spacer"></span>
+  <span class="conn"><span class="dot up"></span>MQTT connected</span>
+</header>
+
+<main>
+<div class="card">
+  <div class="toprow" style="align-items:center">
+    <div><h3 style="margin:0">History &amp; trends</h3>
+      <p class="muted" style="margin:4px 0 0">How each numeric metric has moved over time, sampled every poll
+       cycle. Use it to tune thresholds and spot drift.</p></div>
+    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+      <select id="win" style="margin:0;width:auto">
+        <option value="6">last 6 hours</option>
+        <option value="24" selected>last 24 hours</option>
+        <option value="72">last 3 days</option>
+        <option value="168">last 7 days</option>
+        <option value="720">last 30 days</option>
+      </select>
+      <label class="muted" style="margin:0;display:flex;align-items:center;gap:6px;font-weight:500">
+        <input type="checkbox" id="follow" checked style="width:auto;margin:0"> auto-refresh</label>
+      <button type="button" class="secondary mini" id="export" style="margin:0">Export CSV</button>
+    </div>
+  </div>
+</div>
+
+<div class="grid" id="charts" style="grid-template-columns:repeat(auto-fill,minmax(280px,1fr))">
+  <div class="muted">Loading…</div>
+</div>
+</main>
+
+<footer>The Castle Fun Center · MQTT Command Center · demo build · <a href="https://github.com/SethMorrowSoftware/mqtt-dev" target="_blank" rel="noopener">Docs ↗</a></footer>
+<div id="toast"></div>
+<script src="assets/app.js"></script>
+</body>
+</html>

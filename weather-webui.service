@@ -10,6 +10,14 @@ WorkingDirectory=/opt/weather-mqtt
 ExecStart=/opt/weather-mqtt/venv/bin/python /opt/weather-mqtt/webui.py --config /opt/weather-mqtt/config.yaml
 Restart=on-failure
 RestartSec=10
+TimeoutStopSec=15
+
+# --- Hardening: this one is the network-facing process ---
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/opt/weather-mqtt
 
 [Install]
 WantedBy=multi-user.target
