@@ -287,14 +287,17 @@ function agoText(iso) {
     el.addEventListener("blur", () => validateField(el));
   });
 
-  // Manual control requires a login — mirror the server's fail-closed refusal.
-  function manualGuard() {
-    const amc = form.querySelector("[name=web_allow_manual_control]");
-    if (!amc) return true;
-    if (amc.value !== "true") return true;
+  // Manual control / MQTT publishing require a login — mirror the server's
+  // fail-closed refusal. Returns "" when ok, else the field label that needs one.
+  function loginGuard() {
     const u = (form.querySelector("[name=web_username]") || {}).value || "";
     const p = (form.querySelector("[name=web_password]") || {}).value || "";
-    return !!(u.trim() && p.trim());
+    const haveLogin = !!(u.trim() && p.trim());
+    const amc = form.querySelector("[name=web_allow_manual_control]");
+    if (amc && amc.value === "true" && !haveLogin) return "Manual device control";
+    const amp = form.querySelector("[name=web_allow_mqtt_publish]");
+    if (amp && amp.value === "true" && !haveLogin) return "MQTT publishing";
+    return "";
   }
 
   form.addEventListener("submit", e => {
@@ -304,7 +307,8 @@ function agoText(iso) {
       if (!validateField(el)) ok = false;
     });
     if (!ok) { toast("Could not save: fix the highlighted fields.", true); return; }
-    if (!manualGuard()) { toast("Manual control needs a web login (set a username and password).", true); return; }
+    const needsLogin = loginGuard();
+    if (needsLogin) { toast(needsLogin + " needs a web login (set a username and password).", true); return; }
     toast("Settings saved (demo — nothing was written).");
   });
 })();

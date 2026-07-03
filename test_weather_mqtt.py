@@ -8,6 +8,26 @@ from datetime import datetime, timezone
 import weather_mqtt as w
 
 
+class _Skip(Exception):
+    """Raised by a test to mark itself skipped (e.g. an optional dependency
+    like Flask is missing). The runner counts these separately from passes so
+    the summary never claims coverage that didn't run."""
+
+
+_OPTIONAL_DEPS = ("flask", "ruamel", "ruamel.yaml", "yaml")
+
+
+def _skip_if_optional(e):
+    """Turn an import failure for an OPTIONAL dependency into a _Skip; re-raise
+    anything else so a real bug in webui/setup_wizard surfaces as an error
+    instead of being silently masked as a skipped test."""
+    name = getattr(e, "name", "") or ""
+    if isinstance(e, ImportError) and (
+            name in _OPTIONAL_DEPS or any(d in str(e) for d in _OPTIONAL_DEPS)):
+        return _Skip(e)
+    raise e
+
+
 def _obs(ts, value_mm, unit="wmoUnit:mm"):
     return {"properties": {"timestamp": ts,
                            "precipitationLastHour": {"value": value_mm,
@@ -52,13 +72,26 @@ def test_accumulation_ignores_outside_window_and_meters():
     assert w._accumulate_precip(data, 24, now) == 0.25
 
 
-def test_accumulation_none_when_no_data():
+def test_accumulation_dry_vs_no_data():
     now = datetime(2026, 6, 27, 12, 0, tzinfo=timezone.utc)
-    data = {"features": [
+    # Station IS reporting in-window, but precipitationLastHour is null -- that's
+    # how most ASOS stations report a dry hour, so it means 0.0 (dry), not
+    # unknown. This lets a rain-inhibit rule resolve to ALLOW instead of UNKNOWN.
+    reporting_dry = {"features": [
         {"properties": {"timestamp": "2026-06-27T11:53:00+00:00",
                         "precipitationLastHour": {"value": None}}},
+        {"properties": {"timestamp": "2026-06-27T10:53:00+00:00",
+                        "precipitationLastHour": {"value": None}}},
     ]}
-    assert w._accumulate_precip(data, 24, now) is None
+    assert w._accumulate_precip(reporting_dry, 24, now) == 0.0
+    # No observations at all in the window -> genuinely unavailable -> None.
+    assert w._accumulate_precip({"features": []}, 24, now) is None
+    # Observations exist but all are older than the lookback window -> None too.
+    stale = {"features": [
+        {"properties": {"timestamp": "2026-06-20T11:53:00+00:00",
+                        "precipitationLastHour": {"value": 5.0}}},
+    ]}
+    assert w._accumulate_precip(stale, 24, now) is None
 
 
 def test_detect_raining():
@@ -383,6 +416,13 @@ def test_validate_manual_control_gating_and_manual_field():
     cfg2 = w.validate_config(_min_cfg(
         web={"allow_manual_control": True, "username": "a", "password": "b"}))
     assert cfg2["web"]["allow_manual_control"] is True
+    # allow_anonymous_control keeps it on WITHOUT a login (trusted-LAN opt-in)
+    cfg_anon = w.validate_config(_min_cfg(
+        web={"allow_manual_control": True, "allow_anonymous_control": True}))
+    assert cfg_anon["web"]["allow_manual_control"] is True
+    assert cfg_anon["web"]["allow_anonymous_control"] is True
+    # default stays off/fail-closed
+    assert cfg["web"]["allow_anonymous_control"] is False
     # per-rule manual coerces/validates; defaults to auto
     assert cfg["rules"][0]["manual"] == "auto"
     cfg3 = w.validate_config(_min_cfg(rules=[{
@@ -402,8 +442,7 @@ def test_webui_manual_control_endpoint():
     try:
         import webui
     except Exception as e:
-        print(f"  SKIP  test_webui_manual_control_endpoint ({e})")
-        return
+        raise _skip_if_optional(e)
     import tempfile, os, yaml, json, base64
 
     def _client(allow, login=True):
@@ -541,8 +580,7 @@ def test_webui_variable_endpoint_and_builder_metrics():
     try:
         import webui
     except Exception as e:
-        print(f"  SKIP  test_webui_variable_endpoint_and_builder_metrics ({e})")
-        return
+        raise _skip_if_optional(e)
     import tempfile, os, yaml, base64
 
     p = tempfile.mktemp(suffix=".yaml")
@@ -612,8 +650,7 @@ def test_event_driven_wake_hook():
             mq, [{"topic": "s/tank", "metric": "tank_level", "parse": "number"}],
             {}, on_input=lambda: woke.append(1))
     except Exception as e:
-        print(f"  SKIP  test_event_driven_wake_hook ({e})")
-        return
+        raise _skip_if_optional(e)
 
     class _Msg:
         def __init__(self, t, p): self.topic, self.payload, self.qos, self.retain = t, p, 0, False
@@ -827,8 +864,7 @@ def test_webui_inputs_editor():
     try:
         import webui
     except Exception as e:
-        print(f"  SKIP  test_webui_inputs_editor ({e})")
-        return
+        raise _skip_if_optional(e)
     import tempfile, os, yaml, json
     p = tempfile.mktemp(suffix=".yaml")
     cfg = {
@@ -1043,8 +1079,7 @@ def test_webui_rule_actions_roundtrip():
     try:
         import webui
     except Exception as e:
-        print(f"  SKIP  test_webui_rule_actions_roundtrip ({e})")
-        return
+        raise _skip_if_optional(e)
     import tempfile, os, json, yaml
     p = tempfile.mktemp(suffix=".yaml")
     cfg = {"version": 1, "location": {"latitude": 41.0, "longitude": -74.0},
@@ -1108,8 +1143,7 @@ def test_mqtt_console_buffer_and_publish():
     try:
         import webui
     except Exception as e:
-        print(f"  SKIP  test_mqtt_console_buffer_and_publish ({e})")
-        return
+        raise _skip_if_optional(e)
     con = webui.MqttConsole(buffer_size=3)
     con.record("sensors/a", b"1", qos=0, retain=True)
     con.record("sensors/b", b"hello", qos=1, retain=False)
@@ -1145,8 +1179,7 @@ def test_webui_mqtt_console_api_and_publish_gating():
     try:
         import webui
     except Exception as e:
-        print(f"  SKIP  test_webui_mqtt_console_api_and_publish_gating ({e})")
-        return
+        raise _skip_if_optional(e)
     import tempfile, os, json, base64, yaml
     p = tempfile.mktemp(suffix=".yaml")
     aud = tempfile.mktemp(suffix=".log")
@@ -1216,14 +1249,120 @@ def test_allow_mqtt_publish_requires_login():
     # with a login it sticks
     cfg2 = dict(cfg); cfg2["web"] = {"allow_mqtt_publish": True, "username": "a", "password": "b"}
     assert w.validate_config(cfg2)["web"]["allow_mqtt_publish"] is True
+    # allow_anonymous_control unlocks it without a login (trusted-LAN opt-in)
+    cfg3 = dict(cfg); cfg3["web"] = {"allow_mqtt_publish": True, "allow_anonymous_control": True}
+    assert w.validate_config(cfg3)["web"]["allow_mqtt_publish"] is True
+
+
+def test_webui_anonymous_control_no_login():
+    # web.allow_anonymous_control lets manual control / publish work with NO
+    # login (open UI on a trusted LAN). Publish succeeds with no auth header;
+    # turning the flag off (still no login) returns to 403.
+    try:
+        import webui
+    except Exception as e:
+        raise _skip_if_optional(e)
+    import tempfile, os, yaml
+    p = tempfile.mktemp(suffix=".yaml"); aud = tempfile.mktemp(suffix=".log")
+    cfg = {"version": 1, "location": {"latitude": 41.0, "longitude": -74.0},
+           "user_agent": "x (a@b.com)", "poll_interval_minutes": 15,
+           "precipitation": {"lookback_hours": 24},
+           "mqtt": {"host": "localhost", "port": 1883, "qos": 1, "retain": True},
+           "web": {"enabled": True, "host": "0.0.0.0", "port": 8080,
+                   "username": "", "password": "",
+                   "allow_manual_control": True, "allow_mqtt_publish": True,
+                   "allow_anonymous_control": True},
+           "audit_file": aud,
+           "rules": [{"name": "pump", "topic": "t", "on_match": "1", "on_clear": "0",
+                      "when": {"metric": "is_raining", "operator": "==", "value": True}}]}
+    open(p, "w").write(yaml.safe_dump(cfg))
+    webui.CONFIG_PATH = p
+    webui.app.config["TESTING"] = True
+    webui.console = webui.MqttConsole()
+    c = webui.app.test_client()
+
+    class _Info:
+        rc = 0
+    class _Fake:
+        def publish(self, *a, **k): return _Info()
+    try:
+        # no auth header at all: UI open, publish + manual control allowed
+        assert c.get("/mqtt").status_code == 200
+        assert c.get("/api/mqtt").get_json()["can_publish"] is True
+        webui.console._client = _Fake(); webui.console._connected = True
+        r = c.post("/api/mqtt/publish",
+                   json={"topic": "facility/cmd", "payload": "ON", "qos": 0})
+        assert r.status_code == 200 and r.get_json()["ok"] is True
+        # manual control endpoint also works with no login
+        r2 = c.post("/api/control", json={"device": "pump", "state": "on"})
+        assert r2.status_code == 200 and w.load_overrides(
+            cfg.get("overrides_file", "overrides.json")) == {"pump": "on"}
+        # the CSRF guard still applies even in anonymous mode
+        assert c.post("/api/mqtt/publish", json={"topic": "x", "payload": "y"},
+                      headers={"Origin": "http://evil.example"}).status_code == 403
+        # turn anonymous control OFF (still no login) -> back to 403 / can_publish false
+        cfg["web"]["allow_anonymous_control"] = False
+        open(p, "w").write(yaml.safe_dump(cfg))
+        assert c.post("/api/mqtt/publish",
+                      json={"topic": "facility/cmd", "payload": "ON"}).status_code == 403
+        assert c.get("/api/mqtt").get_json()["can_publish"] is False
+        assert c.post("/api/control", json={"device": "pump", "state": "off"}).status_code == 403
+    finally:
+        webui.console = webui.MqttConsole()
+        for f in (p, aud, "overrides.json"):
+            for s in ("", ".bak", ".tmp"):
+                try: os.unlink(f + s)
+                except OSError: pass
+
+
+def test_webui_settings_saves_anonymous_control(_tmp=None):
+    # The Settings form can enable anonymous control, and that relaxes the
+    # login requirement on manual control / publish.
+    try:
+        import webui
+    except Exception as e:
+        raise _skip_if_optional(e)
+    import tempfile, os, yaml
+    p = tempfile.mktemp(suffix=".yaml")
+    cfg = {"version": 1, "location": {"latitude": 41.0, "longitude": -74.0},
+           "user_agent": "x (a@b.com)", "mqtt": {"host": "localhost", "port": 1883},
+           "web": {"enabled": True},
+           "rules": [{"name": "r", "topic": "t", "on_match": "ON",
+                      "when": {"metric": "is_raining", "operator": "==", "value": True}}]}
+    open(p, "w").write(yaml.safe_dump(cfg))
+    webui.CONFIG_PATH = p
+    webui.app.config["TESTING"] = True
+    c = webui.app.test_client()
+    form = {"latitude": "41", "longitude": "-74", "user_agent": "x (a@b.com)",
+            "poll_interval_minutes": "15", "lookback_hours": "24",
+            "mqtt_host": "localhost", "mqtt_port": "1883", "mqtt_qos": "1",
+            "mqtt_retain": "true", "web_host": "0.0.0.0", "web_port": "8080",
+            "web_username": "", "web_password": "",
+            "web_allow_manual_control": "true", "web_allow_mqtt_publish": "true",
+            "web_allow_anonymous_control": "true"}
+    try:
+        # anonymous control on -> manual/publish accepted with no login
+        r = c.post("/settings", data=form, headers={"Origin": "http://localhost"})
+        assert b"Settings saved" in r.data, r.data
+        saved = yaml.safe_load(open(p))
+        assert saved["web"]["allow_anonymous_control"] is True
+        assert saved["web"]["allow_manual_control"] is True
+        assert saved["web"]["allow_mqtt_publish"] is True
+        # without anonymous control and no login -> the save is rejected
+        form2 = dict(form, web_allow_anonymous_control="false")
+        r = c.post("/settings", data=form2, headers={"Origin": "http://localhost"})
+        assert b"needs a web login" in r.data
+    finally:
+        for s in ("", ".bak", ".tmp"):
+            try: os.unlink(p + s)
+            except OSError: pass
 
 
 def test_webui_activity_page_and_audit_api():
     try:
         import webui
     except Exception as e:
-        print(f"  SKIP  test_webui_activity_page_and_audit_api ({e})")
-        return
+        raise _skip_if_optional(e)
     import tempfile, os, yaml
     p = tempfile.mktemp(suffix=".yaml")
     aud = tempfile.mktemp(suffix=".log")
@@ -1321,8 +1460,7 @@ def test_webui_history_page_and_api():
     try:
         import webui
     except Exception as e:
-        print(f"  SKIP  test_webui_history_page_and_api ({e})")
-        return
+        raise _skip_if_optional(e)
     import tempfile, os, yaml
     from datetime import datetime, timezone, timedelta
     p = tempfile.mktemp(suffix=".yaml")
@@ -1364,8 +1502,7 @@ def test_webui_system_page_and_apis():
     try:
         import webui
     except Exception as e:
-        print(f"  SKIP  test_webui_system_page_and_apis ({e})")
-        return
+        raise _skip_if_optional(e)
     import tempfile, os, json, yaml
     from datetime import datetime, timezone
     p = tempfile.mktemp(suffix=".yaml")
@@ -1565,8 +1702,7 @@ def test_setup_wizard_renders_valid_config():
     try:
         import setup_wizard
     except Exception as e:
-        print(f"  SKIP  test_setup_wizard_renders_valid_config ({e})")
-        return
+        raise _skip_if_optional(e)
     import yaml
     answers = {
         "lat": 41.25, "lon": -74.27, "user_agent": "weather-mqtt-controller (a@b.com)",
@@ -1582,6 +1718,13 @@ def test_setup_wizard_renders_valid_config():
     # and with no web auth
     answers2 = dict(answers, web_user="", web_pass="")
     w.validate_config(yaml.safe_load(setup_wizard._render(answers2)))
+    # answers containing quotes/backslashes must not break the YAML
+    answers3 = dict(answers, web_pass='p"w\\d',
+                    user_agent='weather ("quoted" contact)')
+    parsed3 = yaml.safe_load(setup_wizard._render(answers3))
+    w.validate_config(parsed3)
+    assert parsed3["web"]["password"] == 'p"w\\d'
+    assert parsed3["user_agent"] == 'weather ("quoted" contact)'
 
 
 def test_detect_raining_ignores_vicinity_and_fog():
@@ -1731,8 +1874,7 @@ def test_webui_settings_roundtrip_and_validation():
     try:
         import webui
     except Exception as e:  # Flask / ruamel not installed -> skip, don't fail
-        print(f"  SKIP  test_webui_settings_roundtrip_and_validation ({e})")
-        return
+        raise _skip_if_optional(e)
 
     import tempfile, os, yaml
     base = {
@@ -1779,9 +1921,12 @@ def test_webui_settings_roundtrip_and_validation():
         # file unchanged by the rejected save
         assert yaml.safe_load(open(p))["location"]["latitude"] == 40.5
 
-        # healthz + api/state respond
-        assert c.get("/healthz").status_code in (200, 500)
-        assert c.get("/api/state").status_code in (200, 503)
+        # healthz + api/state respond correctly (config here is valid, so a 500
+        # would mean a broken endpoint, not a config problem).
+        hz = c.get("/healthz")
+        assert hz.status_code == 200 and hz.get_json().get("config_ok") is True
+        st = c.get("/api/state")
+        assert st.status_code in (200, 503)   # snapshot present or not -- never 500
     finally:
         for suffix in ("", ".bak", ".tmp"):
             try:
@@ -1796,8 +1941,7 @@ def test_webui_structured_rule_builder():
     try:
         import webui
     except Exception as e:
-        print(f"  SKIP  test_webui_structured_rule_builder ({e})")
-        return
+        raise _skip_if_optional(e)
     import yaml, copy
 
     items = [
@@ -1857,8 +2001,7 @@ def test_webui_builder_advanced_constructs():
     try:
         import webui
     except Exception as e:
-        print(f"  SKIP  test_webui_builder_advanced_constructs ({e})")
-        return
+        raise _skip_if_optional(e)
     import yaml, copy
 
     items = [
@@ -2036,8 +2179,7 @@ def test_webui_request_size_cap_configured():
     try:
         import webui
     except Exception as e:
-        print(f"  SKIP  test_webui_request_size_cap_configured ({e})")
-        return
+        raise _skip_if_optional(e)
     # A request-body cap must be set so an oversized POST can't OOM the dashboard.
     assert webui.app.config.get("MAX_CONTENT_LENGTH") == 1024 * 1024
     # save_config routes through the core atomic+fsync writer.
@@ -2246,6 +2388,8 @@ class _FakePahoClient:
     def publish(self, topic, payload, qos=0, retain=False):
         self.pubs.append((topic, payload, qos, retain)); return _FakeInfo()
     def reconnect_delay_set(self, **k): pass
+    def connect_async(self, *a, **k): pass
+    def loop_start(self): pass
 
 
 class _FakeMqttModule:
@@ -2317,6 +2461,42 @@ def test_mqtt_tls_applied_when_enabled():
     _with_fake_mqtt(body)
 
 
+def test_dynamic_string_metric_rules_evaluate():
+    # A rule on an mqtt_in `parse: string` metric must actually evaluate with
+    # the text operators validation accepts for it (contains/equals/in/regex).
+    cfg = w.validate_config(_min_cfg(
+        mqtt_inputs=[{"topic": "t/door", "metric": "door_state", "parse": "string"}],
+        rules=[{"name": "door",
+                "when": {"metric": "door_state", "operator": "contains",
+                         "value": "open"},
+                "topic": "alarm/door", "on_match": "1", "on_clear": "0"}]))
+    specs = w.metric_catalogue(cfg)
+    rule = cfg["rules"][0]
+    assert w.evaluate_rule(rule, {"door_state": "OPEN wide"}, specs=specs) is True
+    assert w.evaluate_rule(rule, {"door_state": "closed"}, specs=specs) is False
+    # No reading yet -> unavailable -> hold last state (None), never a
+    # fabricated False.
+    assert w.evaluate_rule(rule, {}, specs=specs) is None
+    # The other text operators work on dynamic strings too.
+    for op, val, text, expect in [
+        ("equals", "open", "Open", True),
+        ("equals", "open", "ajar", False),
+        ("in", ["open", "ajar"], "AJAR", True),
+        ("regex", "^op", "opening", True),
+        ("regex", "^op", "closed", False),
+    ]:
+        r = {"name": "x", "when": {"metric": "door_state", "operator": op,
+                                   "value": val},
+             "topic": "t", "on_match": "1"}
+        assert w.evaluate_rule(r, {"door_state": text}, specs=specs) is expect, \
+            (op, val, text)
+    # Built-in text metrics are unaffected: no specs arg still works.
+    r2 = {"name": "y", "when": {"metric": "short_forecast",
+                                "operator": "contains", "value": "rain"},
+          "topic": "t", "on_match": "1"}
+    assert w.evaluate_rule(r2, {"short_forecast": "Light Rain"}) is True
+
+
 def test_mqtt_config_defaults_availability_and_tls():
     cfg = w.validate_config(_min_cfg())
     assert cfg["mqtt"]["availability_topic"] == "weather-mqtt/status"
@@ -2326,20 +2506,455 @@ def test_mqtt_config_defaults_availability_and_tls():
     assert cfg2["mqtt"]["tls"]["enabled"] is True
 
 
+def test_reload_config_keeps_last_good_on_invalid():
+    # Documented fail-safe: a mid-run edit that breaks config.yaml must not take
+    # the monitor down -- it keeps the last-good config.
+    import tempfile, os
+    good = _min_cfg()
+    prev = w.validate_config(dict(good, poll_interval_minutes=7,
+                                  precipitation={"lookback_hours": 12}))
+    p = tempfile.mktemp(suffix=".yaml")
+    try:
+        # syntactically broken YAML -> previous returned unchanged
+        open(p, "w").write("rules: [::: not yaml")
+        cfg, ok = w.reload_config_or_keep(p, prev)
+        assert ok is False and cfg is prev
+        # schema-invalid (validate_config raises) -> previous kept
+        import yaml
+        open(p, "w").write(yaml.safe_dump({"version": 1, "rules": []}))
+        cfg, ok = w.reload_config_or_keep(p, prev)
+        assert ok is False and cfg is prev
+        # a valid file -> the new config is applied
+        open(p, "w").write(yaml.safe_dump(_min_cfg(poll_interval_minutes=9)))
+        cfg, ok = w.reload_config_or_keep(p, prev)
+        assert ok is True and cfg["poll_interval_minutes"] == 9
+    finally:
+        try: os.unlink(p)
+        except OSError: pass
+
+
+def test_read_history_time_window_filters():
+    # Unambiguous offsets well clear of the 1h boundary, so the window filter is
+    # actually exercised (not a vacuous <= assertion).
+    import tempfile, os
+    from datetime import datetime, timezone, timedelta
+    db = tempfile.mktemp(suffix=".db")
+    now = datetime.now(timezone.utc)
+    try:
+        for mins, val in [(5, 10.0), (30, 20.0), (55, 30.0), (65, 40.0), (120, 50.0)]:
+            ts = (now - timedelta(minutes=mins)).isoformat(timespec="seconds")
+            w.record_history(db, {"p": val}, ts=ts, retention_days=30)
+        got = [pt[1] for pt in w.read_history(db, hours=1)["p"]]
+        assert got == [30.0, 20.0, 10.0], got   # only the 5/30/55-min points, in ts order
+    finally:
+        for s in ("", "-wal", "-shm"):
+            try: os.unlink(db + s)
+            except OSError: pass
+
+
+def test_active_alerts_none_holds_state():
+    # A failed alerts fetch leaves active_alerts None -> the rule holds, rather
+    # than reading "no alerts" and clearing a warning directive.
+    rule = {"name": "r", "topic": "t", "on_match": "1",
+            "when": {"metric": "active_alert", "operator": "any"}}
+    assert w.evaluate_rule(rule, {"active_alerts": None}) is None      # hold
+    assert w.evaluate_rule(rule, {"active_alerts": []}) is False       # dry read
+    assert w.evaluate_rule(rule, {"active_alerts": ["Flood Warning"]}) is True
+
+
+def test_webhook_and_notify_failure_isolation():
+    # A webhook/notify that raises must not stop the cycle or the other actions,
+    # and each firing is audited with its ok flag.
+    import tempfile, os
+    aud = tempfile.mktemp(suffix=".log")
+
+    class Info:
+        rc = 0
+    class FakeClient:
+        def __init__(self): self.pubs = []
+        def publish(self, topic, payload, qos=0, retain=False):
+            self.pubs.append((topic, payload)); return Info()
+
+    real_post, real_put = w.requests.post, w.requests.put
+    def boom(*a, **k): raise ConnectionError("network down")
+    w.requests.post = boom
+    w.requests.put = boom
+    try:
+        rule = {"name": "vent", "topic": "t", "on_match": "ON", "on_clear": "OFF",
+                "actions": [
+                    {"trigger": "match", "webhook": {"url": "https://h/x", "method": "POST"}},
+                    {"trigger": "match", "notify": {"text": "hi"}},
+                    {"trigger": "match", "mqtt": {"topic": "x/y", "payload": "p"}},
+                ]}
+        client = FakeClient()
+        slack = {"enabled": True, "bot_token": "xoxb-t", "channel": "#c"}
+        # Must not raise despite webhook+notify failing.
+        w.fire_actions(rule, True, {"temperature": 80}, client, 1, True, slack, aud)
+        assert client.pubs == [("x/y", "p")]        # the mqtt action still fired
+        events = w.read_audit(aud, 50)
+        kinds = {e.get("kind"): e.get("ok") for e in events if e.get("action") == "action_fired"}
+        assert kinds.get("webhook") is False and kinds.get("notify") is False
+        assert kinds.get("mqtt") is True
+    finally:
+        w.requests.post, w.requests.put = real_post, real_put
+        for s in ("", ".1"):
+            try: os.unlink(aud + s)
+            except OSError: pass
+
+
+def test_manual_override_beats_window_and_hysteresis():
+    # Precedence: a manual on/off override wins over the window gate and bypasses
+    # hysteresis; clearing to auto hands control back to the rule.
+    from datetime import datetime, timezone
+    rule = {"name": "pump", "topic": "t", "on_match": "ON", "on_clear": "OFF",
+            "when": {"metric": "temperature", "operator": ">", "value": 85},
+            "window": {"from": "06:00", "to": "20:00"},
+            "hysteresis": {"min_on": "10m"}}
+    now = datetime(2026, 6, 29, 2, 0, tzinfo=timezone.utc)   # 02:00 -> outside window
+    now_local = now.astimezone()
+    # Outside the window the rule's desired state is forced OFF...
+    assert w.resolve_desired(rule, {"temperature": 90}, now_local) is False
+    # ...but a manual override is applied ahead of the window/rule in main()'s
+    # resolution order, so effective_manual decides.
+    assert w.effective_manual(rule, {"pump": "on"}) == "on"
+    assert w.effective_manual(rule, {"pump": "off"}) == "off"
+    assert w.effective_manual(rule, {}) == "auto"
+    # min_on holds a running load ON until the timer elapses, even once the rule
+    # wants OFF.
+    lc = datetime(2026, 6, 29, 1, 55, tzinfo=timezone.utc)   # changed 5 min ago
+    assert w.apply_hysteresis({"min_on": "10m"}, True, False, lc, now) is True   # held ON
+    lc2 = datetime(2026, 6, 29, 1, 40, tzinfo=timezone.utc)  # 20 min ago
+    assert w.apply_hysteresis({"min_on": "10m"}, True, False, lc2, now) is False  # released
+
+
+def test_as_number_rejects_nan_and_inf():
+    # A sensor payload of "nan"/"inf" must read as unavailable (hold last
+    # state), not poison every downstream comparison/computed metric.
+    assert w._as_number("nan", None, "x") is None
+    assert w._as_number("inf", None, "x") is None
+    assert w._as_number("-inf", None, "x") is None
+    assert w._as_number(float("nan"), None, "x") is None
+    assert w.coerce_payload(b"NaN", "number") is None
+    assert w._as_number("5.5", None, "x") == 5.5      # real numbers still pass
+
+
+def test_bool_condition_value_normalized():
+    # A quoted YAML bool (value: "true") must normalize to a real bool instead
+    # of silently never matching.
+    cfg = w.validate_config(_min_cfg(rules=[{
+        "name": "r", "topic": "t", "on_match": "1",
+        "when": {"metric": "is_raining", "operator": "==", "value": "true"}}]))
+    assert cfg["rules"][0]["when"]["value"] is True
+    assert w.evaluate_rule(cfg["rules"][0], {"is_raining": True}) is True
+    try:
+        w.validate_config(_min_cfg(rules=[{
+            "name": "r", "topic": "t", "on_match": "1",
+            "when": {"metric": "is_raining", "operator": "==", "value": "maybe"}}]))
+        assert False, "garbage bool value should be rejected"
+    except ValueError:
+        pass
+
+
+def test_changed_operator_on_active_alert():
+    # README documents { metric: active_alert, operator: changed }; the value
+    # lives under the plural 'active_alerts' key in the metric context.
+    st = w.EngineState()
+    now = datetime(2026, 6, 27, 12, 0, tzinfo=timezone.utc)
+    rule = {"name": "r", "topic": "t", "on_match": "1",
+            "when": {"metric": "active_alert", "operator": "changed"}}
+    m1 = {"active_alerts": []}
+    assert w.evaluate_rule(rule, m1, st, now) is False   # first observation
+    st.observe(m1)
+    m2 = {"active_alerts": ["Flood Warning"]}
+    assert w.evaluate_rule(rule, m2, st, now) is True    # alert set changed
+    st.observe(m2)
+    assert w.evaluate_rule(rule, m2, st, now) is False   # stable again
+
+
+def test_alert_equals_case_insensitive():
+    rule = {"name": "r", "topic": "t", "on_match": "1",
+            "when": {"metric": "active_alert", "operator": "equals",
+                     "value": "flood warning"}}
+    assert w.evaluate_rule(rule, {"active_alerts": ["Flood Warning"]}) is True
+    assert w.evaluate_rule(rule, {"active_alerts": ["Heat Advisory"]}) is False
+
+
+def test_cond_key_distinguishes_value_metric():
+    a = {"metric": "m", "operator": ">", "value_metric": "x", "for": "10m"}
+    b = {"metric": "m", "operator": ">", "value_metric": "y", "for": "10m"}
+    assert w._cond_key("r", a) != w._cond_key("r", b)
+
+
+def test_audit_log_rotates_and_reads_backup():
+    import tempfile, os
+    path = tempfile.mktemp(suffix=".log")
+    old = w._AUDIT_MAX_BYTES
+    try:
+        w._AUDIT_MAX_BYTES = 200        # force rotation quickly
+        for i in range(50):
+            w.audit(path, device=f"d{i}", state="on", source="auto", by="t")
+        assert os.path.exists(path + ".1")            # rotated
+        assert os.path.getsize(path) < 1000           # current file stays small
+        cur_lines = len(open(path).read().splitlines())
+        events = w.read_audit(path, limit=50)
+        assert len(events) > cur_lines                # backup fills the window
+        assert events[0]["device"] == "d49"           # newest first, nothing lost
+    finally:
+        w._AUDIT_MAX_BYTES = old
+        for s in ("", ".1"):
+            try: os.unlink(path + s)
+            except OSError: pass
+
+
+def test_atomic_write_preserves_permissions():
+    import tempfile, os, stat
+    p = tempfile.mktemp(suffix=".yaml")
+    try:
+        w._atomic_write(p, "a: 1\n")
+        os.chmod(p, 0o600)                     # installer locks config to 0600
+        w._atomic_write(p, "a: 2\n")           # a web-UI save must not widen it
+        assert stat.S_IMODE(os.stat(p).st_mode) == 0o600
+    finally:
+        for s in ("", ".tmp"):
+            try: os.unlink(p + s)
+            except OSError: pass
+
+
+def test_webui_config_save_keeps_0600(_tmp=None):
+    try:
+        import webui
+    except Exception as e:
+        raise _skip_if_optional(e)
+    import tempfile, os, stat, yaml
+    p = tempfile.mktemp(suffix=".yaml")
+    cfg = {"version": 1, "location": {"latitude": 41.0, "longitude": -74.0},
+           "user_agent": "x (a@b.com)", "mqtt": {"host": "localhost", "port": 1883},
+           "web": {"enabled": True},
+           "rules": [{"name": "r", "topic": "t", "on_match": "ON",
+                      "when": {"metric": "is_raining", "operator": "==", "value": True}}]}
+    open(p, "w").write(yaml.safe_dump(cfg))
+    os.chmod(p, 0o600)
+    webui.CONFIG_PATH = p
+    try:
+        webui.save_config(webui.load_raw())
+        assert stat.S_IMODE(os.stat(p).st_mode) == 0o600
+        # the backup copy must not be world-readable either
+        assert stat.S_IMODE(os.stat(p + ".bak").st_mode) == 0o600
+    finally:
+        for s in ("", ".bak", ".tmp"):
+            try: os.unlink(p + s)
+            except OSError: pass
+
+
+def test_webui_settings_clearing_username_clears_password(_tmp=None):
+    # Clearing the username must also drop the stored password, or _auth_ok
+    # would deny every request (username='' + password set) and lock the UI.
+    try:
+        import webui
+    except Exception as e:
+        raise _skip_if_optional(e)
+    import tempfile, os, base64, yaml
+    p = tempfile.mktemp(suffix=".yaml")
+    cfg = {"version": 1, "location": {"latitude": 41.0, "longitude": -74.0},
+           "user_agent": "x (a@b.com)", "mqtt": {"host": "localhost", "port": 1883},
+           "web": {"enabled": True, "username": "admin", "password": "secret"},
+           "rules": [{"name": "r", "topic": "t", "on_match": "ON",
+                      "when": {"metric": "is_raining", "operator": "==", "value": True}}]}
+    open(p, "w").write(yaml.safe_dump(cfg))
+    webui.CONFIG_PATH = p
+    webui.app.config["TESTING"] = True
+    c = webui.app.test_client()
+    hdr = {"Authorization": "Basic " + base64.b64encode(b"admin:secret").decode(),
+           "Origin": "http://localhost"}
+    try:
+        form = {"latitude": "41", "longitude": "-74", "user_agent": "x (a@b.com)",
+                "poll_interval_minutes": "15", "lookback_hours": "24",
+                "mqtt_host": "localhost", "mqtt_port": "1883", "mqtt_qos": "1",
+                "mqtt_retain": "true", "web_host": "127.0.0.1", "web_port": "8080",
+                "web_username": "", "web_password": ""}
+        r = c.post("/settings", data=form, headers=hdr)
+        assert b"Settings saved" in r.data
+        saved = yaml.safe_load(open(p))
+        assert saved["web"]["username"] == "" and saved["web"]["password"] == ""
+        # auth is now disabled, so the UI is reachable with no credentials
+        assert c.get("/api/system").status_code == 200
+    finally:
+        for s in ("", ".bak", ".tmp"):
+            try: os.unlink(p + s)
+            except OSError: pass
+
+
+def test_webui_inputs_reject_duplicate_names(_tmp=None):
+    try:
+        import webui
+    except Exception as e:
+        raise _skip_if_optional(e)
+    cfg = {"version": 1, "location": {"latitude": 41.0, "longitude": -74.0},
+           "user_agent": "x (a@b.com)", "mqtt": {},
+           "rules": [{"name": "r", "topic": "t", "on_match": "ON",
+                      "when": {"metric": "is_raining", "operator": "==", "value": True}}]}
+    for payload, needle in [
+        ({"variables": [{"name": "dup", "type": "bool", "default": "false"},
+                        {"name": "dup", "type": "number", "default": "1"}]}, "duplicate variable"),
+        ({"computed": [{"name": "c", "expr": "temperature"},
+                       {"name": "c", "expr": "humidity"}]}, "duplicate computed"),
+    ]:
+        try:
+            webui._apply_sources(dict(cfg), payload)
+            assert False, "duplicate name should be rejected"
+        except ValueError as e:
+            assert needle in str(e), str(e)
+
+
+def test_rule_is_flat_routes_advanced_rules_to_yaml(_tmp=None):
+    try:
+        import webui
+    except Exception as e:
+        raise _skip_if_optional(e)
+    flat = {"name": "a", "topic": "t", "on_match": "1",
+            "when": {"metric": "is_raining", "operator": "==", "value": True}}
+    assert webui._rule_is_flat(flat) is True
+    # a declared manual state can't be round-tripped by the builder
+    assert webui._rule_is_flat(dict(flat, manual="on")) is False
+    # webhook headers and explicit retain: false likewise
+    assert webui._rule_is_flat(dict(flat, actions=[
+        {"trigger": "match", "webhook": {"url": "u", "headers": {"X": "1"}}}])) is False
+    assert webui._rule_is_flat(dict(flat, actions=[
+        {"trigger": "match", "mqtt": {"topic": "x", "retain": False}}])) is False
+    # a plain retain: true action is still flat
+    assert webui._rule_is_flat(dict(flat, actions=[
+        {"trigger": "match", "mqtt": {"topic": "x", "retain": True}}])) is True
+
+
+def test_webui_cross_origin_posts_rejected():
+    # Browsers attach Basic-auth credentials automatically, so a cross-site
+    # POST must be refused even when it authenticates (CSRF defense).
+    try:
+        import webui
+    except Exception as e:
+        raise _skip_if_optional(e)
+    import tempfile, os, yaml, base64
+
+    p = tempfile.mktemp(suffix=".yaml")
+    ovr = tempfile.mktemp(suffix=".json")
+    aud = tempfile.mktemp(suffix=".log")
+    cfg = {
+        "version": 1, "location": {"latitude": 41.0, "longitude": -74.0},
+        "user_agent": "x (a@b.com)",
+        "mqtt": {"host": "localhost", "port": 1883},
+        "web": {"enabled": True, "username": "admin", "password": "pw",
+                "allow_manual_control": True},
+        "overrides_file": ovr, "audit_file": aud,
+        "rules": [{"name": "pump", "topic": "t", "on_match": "ON",
+                   "when": {"metric": "is_raining", "operator": "==", "value": True}}],
+    }
+    open(p, "w").write(yaml.safe_dump(cfg))
+    webui.CONFIG_PATH = p
+    webui.app.config["TESTING"] = True
+    c = webui.app.test_client()
+    hdr = {"Authorization": "Basic " + base64.b64encode(b"admin:pw").decode()}
+    body = {"device": "pump", "state": "on"}
+    try:
+        # cross-site Origin -> rejected before any handler runs
+        r = c.post("/api/control", json=body,
+                   headers={**hdr, "Origin": "http://evil.example"})
+        assert r.status_code == 403 and w.load_overrides(ovr) == {}
+        # a sandboxed "null" Origin is cross-site too
+        assert c.post("/api/control", json=body,
+                      headers={**hdr, "Origin": "null"}).status_code == 403
+        # same-origin fetch (browser sends our own host) -> allowed
+        r = c.post("/api/control", json=body,
+                   headers={**hdr, "Origin": "http://localhost"})
+        assert r.status_code == 200 and w.load_overrides(ovr) == {"pump": "on"}
+        # no Origin at all (curl / scripts) -> allowed
+        assert c.post("/api/control", json={"device": "pump", "state": "auto"},
+                      headers=hdr).status_code == 200
+        # GETs are never blocked by the guard
+        assert c.get("/api/state",
+                     headers={**hdr, "Origin": "http://evil.example"}).status_code in (200, 503)
+    finally:
+        for f in (p, ovr, aud):
+            for s in ("", ".tmp", ".bak"):
+                try: os.unlink(f + s)
+                except OSError: pass
+
+
+def test_webui_auth_handles_non_ascii_credentials():
+    # hmac.compare_digest raises on non-ASCII str; the login must compare bytes
+    # so a non-ASCII password works and a wrong guess gets 401, not a 500.
+    try:
+        import webui
+    except Exception as e:
+        raise _skip_if_optional(e)
+    import tempfile, os, yaml, base64
+
+    p = tempfile.mktemp(suffix=".yaml")
+    cfg = {
+        "version": 1, "location": {"latitude": 41.0, "longitude": -74.0},
+        "user_agent": "x (a@b.com)", "mqtt": {},
+        "web": {"enabled": True, "username": "admin", "password": "pässwörd"},
+        "rules": [{"name": "r", "topic": "t", "on_match": "ON",
+                   "when": {"metric": "is_raining", "operator": "==", "value": True}}],
+    }
+    open(p, "w").write(yaml.safe_dump(cfg, allow_unicode=True))
+    webui.CONFIG_PATH = p
+    webui.app.config["TESTING"] = True
+    c = webui.app.test_client()
+    try:
+        good = {"Authorization": "Basic " +
+                base64.b64encode("admin:pässwörd".encode()).decode()}
+        assert c.get("/api/system", headers=good).status_code == 200
+        bad = {"Authorization": "Basic " +
+               base64.b64encode("admin:wröng".encode()).decode()}
+        assert c.get("/api/system", headers=bad).status_code == 401
+    finally:
+        try: os.unlink(p)
+        except OSError: pass
+
+
+def test_webui_console_applies_broker_tls():
+    # The web UI's MQTT console must honor mqtt.tls like the monitor does,
+    # or it can never connect to a TLS-only broker.
+    try:
+        import webui
+    except Exception as e:
+        raise _skip_if_optional(e)
+    real = webui.mqtt
+    webui.mqtt = _FakeMqttModule
+    try:
+        console = webui.MqttConsole()
+        console.start({"web": {"mqtt_console_enabled": True},
+                       "mqtt": {"host": "h", "port": 8883, "client_id": "c",
+                                "tls": {"enabled": True, "ca_certs": "/x/ca.pem"}}})
+        assert console._client is not None
+        assert console._client.tls is not None
+        assert console._client.tls.get("ca_certs") == "/x/ca.pem"
+    finally:
+        webui.mqtt = real
+
+
 def run():
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
-    failed = 0
+    failed = skipped = 0
     for t in tests:
         try:
             t()
             print(f"  PASS  {t.__name__}")
+        except _Skip as e:
+            skipped += 1
+            print(f"  SKIP  {t.__name__} ({e})")
         except AssertionError as e:
             failed += 1
             print(f"  FAIL  {t.__name__}: {e}")
         except Exception as e:
             failed += 1
             print(f"  ERROR {t.__name__}: {type(e).__name__}: {e}")
-    print(f"\n{len(tests) - failed}/{len(tests)} passed")
+    summary = f"\n{len(tests) - failed - skipped}/{len(tests)} passed"
+    if skipped:
+        summary += f", {skipped} skipped"
+    if failed:
+        summary += f", {failed} FAILED"
+    print(summary)
     return failed
 
 

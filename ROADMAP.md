@@ -1,9 +1,14 @@
 # Roadmap — v2: a customizable "Conditions → Actions" controller
 
-> Status: **proposal / spec only.** Nothing here is built yet; the current v1
-> controller is unchanged. This document is the agreed plan for evolving it from
-> a weather→irrigation tool into a general, web‑customizable on/off automation
-> hub — **without breaking existing installs.**
+> Status: **mostly delivered on the v1 schema.** The engine work in this plan —
+> nested `any`/`all`/`not` rules, schedule/time inputs, MQTT‑in sensors, HTTP‑poll
+> inputs, operator variables, computed metrics, per‑rule time windows and
+> hysteresis, manual override, extra actions (`mqtt`/`webhook`/`notify`), and
+> metric history — is **shipped** in the current controller and covered by the
+> test suite, all as additive `version: 1` config that leaves existing installs
+> working. What remains unbuilt is the formal **v2 config schema** and its
+> automatic migrator (the `version: 2` gate is in place and rejects a v2 file
+> cleanly for now). Sections below that describe the v2 schema are still spec.
 
 ## Goal
 
@@ -27,9 +32,10 @@ and the same reliability/security posture as today.
 | History / trends | **Low priority** — optional final phase, off by default. |
 | Multi‑site / roles | **No** — single site, single operator (one login). |
 
-Explicitly **out of scope** (for now): analog outputs, non‑MQTT actions (webhooks),
-multi‑user roles, any cloud‑initiated control. The outbound read‑only status page
-stays read‑only.
+Explicitly **out of scope** (for now): analog/dimming outputs, multi‑user roles,
+and any cloud‑initiated control. (Webhook and Slack `notify` actions, once listed
+here as later work, are now shipped as opt‑in extra actions.) The outbound
+read‑only status page stays read‑only.
 
 ---
 

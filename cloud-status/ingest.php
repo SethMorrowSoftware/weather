@@ -46,7 +46,15 @@ if (!hash_equals($INGEST_TOKEN, (string) $got)) {
 }
 
 // --- read + validate the body (cap size; must be a JSON object) --------------
-$raw = file_get_contents('php://input', false, null, 0, 65536); // 64 KB cap
+// Read one byte past the cap so an oversized snapshot is REJECTED (413) rather
+// than silently truncated into invalid JSON that leaves the mirror stale.
+$MAX = 262144; // 256 KB
+$raw = file_get_contents('php://input', false, null, 0, $MAX + 1);
+if (strlen((string) $raw) > $MAX) {
+    http_response_code(413);
+    echo json_encode(['error' => 'status payload too large']);
+    exit;
+}
 $data = json_decode((string) $raw, true);
 if (!is_array($data)) {
     http_response_code(400);

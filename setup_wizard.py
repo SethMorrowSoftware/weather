@@ -11,10 +11,27 @@ Run:  python setup_wizard.py            # writes ./config.yaml
 """
 
 import argparse
+import os
 import sys
 from pathlib import Path
 
 import weather_mqtt as core
+
+
+def _chmod_600(path):
+    try:
+        os.chmod(path, 0o600)
+    except OSError:
+        pass
+
+
+def _write_private(path, text):
+    """Write text to path with 0600 permissions from creation (no world-readable
+    window), so the config's secrets are never briefly exposed."""
+    fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        f.write(text)
+    _chmod_600(path)   # tighten an existing file too (O_CREAT mode is create-only)
 
 
 # ---------------------------------------------------------------------------
@@ -23,10 +40,17 @@ import weather_mqtt as core
 def _ask(prompt, default=None, required=False, cast=None, validate=None):
     """Prompt until a valid answer is given. Returns the cast value."""
     suffix = f" [{default}]" if default not in (None, "") else ""
+    eof_seen = 0
     while True:
         try:
             raw = input(f"{prompt}{suffix}: ").strip()
         except EOFError:
+            # A required prompt with no default can't be answered without a
+            # terminal; bail out cleanly instead of spinning forever on EOF.
+            eof_seen += 1
+            if eof_seen >= 2 and required and default in (None, ""):
+                raise SystemExit("\nsetup_wizard: no input available for a "
+                                 "required prompt; run it in a terminal.")
             raw = ""
         if not raw:
             if default not in (None, ""):
@@ -54,7 +78,10 @@ def _ask(prompt, default=None, required=False, cast=None, validate=None):
 def _yes_no(prompt, default=False):
     d = "Y/n" if default else "y/N"
     while True:
-        raw = input(f"{prompt} [{d}]: ").strip().lower()
+        try:
+            raw = input(f"{prompt} [{d}]: ").strip().lower()
+        except EOFError:
+            return default          # non-interactive/EOF -> take the default
         if not raw:
             return default
         if raw in ("y", "yes"):
@@ -73,7 +100,14 @@ def _range(lo, hi, label):
 # ---------------------------------------------------------------------------
 # Config template (commented, so the written file stays human-friendly)
 # ---------------------------------------------------------------------------
+def _yq(s):
+    """Escape a value for a double-quoted YAML scalar, so an answer containing
+    a quote or backslash (e.g. in a password) can't break the generated file."""
+    return str(s).replace("\\", "\\\\").replace('"', '\\"')
+
+
 def _render(c):
+    c = {k: (_yq(v) if isinstance(v, str) else v) for k, v in c.items()}
     web_auth_note = ("" if c["web_user"] else
                      "  # (blank = no login; set both to require one)\n")
     return f"""# ===========================================================================
@@ -258,6 +292,16 @@ def main():
               "copy config.yaml and edit it by hand.", file=sys.stderr)
         return 1
 
+    # Make sure the target directory exists before spending the user's time on
+    # the wizard, so a bad -o path doesn't discard every answer at the end.
+    if out.parent and not out.parent.exists():
+        try:
+            out.parent.mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            print(f"Cannot create output directory {out.parent}: {e}",
+                  file=sys.stderr)
+            return 1
+
     c = run_wizard()
     text = _render(c)
 
@@ -270,9 +314,13 @@ def main():
               file=sys.stderr)
         return 1
 
+    # config.yaml holds secrets (web/MQTT passwords, Slack token); write it (and
+    # the backup) owner-only rather than the default world-readable 0644.
     if out.exists():
-        Path(str(out) + ".bak").write_text(out.read_text())
-    out.write_text(text)
+        bak = Path(str(out) + ".bak")
+        bak.write_text(out.read_text())
+        _chmod_600(bak)
+    _write_private(out, text)
     print(f"\n✓ Wrote {out}")
     print(f"  Dashboard will be at http://<this-host>:{c['web_port']}")
     print("  Test it first:  python weather_mqtt.py --config "

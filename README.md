@@ -253,7 +253,18 @@ broadly, put it behind nginx/Caddy and enable auth. To enable the login set
 password); credentials are compared in constant time, and the UI fails **closed**
 — if `config.yaml` can't be read it denies access rather than serving the editor
 unauthenticated. Saved passwords are never echoed back into the page; leave a
-password field blank to keep the stored value.
+password field blank to keep the stored value. State-changing requests are
+protected against cross-site request forgery: a POST whose `Origin` header
+names another site is rejected outright, so a malicious page can't ride the
+browser's remembered login to flip devices or publish MQTT.
+
+On a **trusted, isolated LAN** you can skip the login entirely and still use the
+privileged controls: set `web.allow_anonymous_control: true` (Settings → Web
+interface → Anonymous control) to let **manual control** and **MQTT publishing**
+work with no username/password — the same posture as an anonymous broker. It's
+off by default (fail-closed), and the cross-site guard still applies, so a remote
+page still can't drive it. With it on, **anyone who can reach the page can drive
+MQTT**, so only use it where the network itself is the security boundary.
 
 ## Manual control (opt-in)
 
@@ -274,7 +285,8 @@ weather):
   `config.yaml`, so editing rules never wipes an override.
 - Every manual change and every automatic state change is appended to an
   **audit log** (`audit.log`) with a timestamp and the acting user, and is shown
-  in the web UI's **Activity** page in plain language (newest first).
+  in the web UI's **Activity** page in plain language (newest first). The log
+  rotates at ~5 MB (one `.1` backup) so it can't grow without bound.
 - The remote status page stays **strictly read-only** — it can never issue a
   command; it only shows a "manual" indicator when a device is overridden.
 
@@ -448,8 +460,14 @@ journalctl -u weather-mqtt -f                       # live logs
 
 ```bash
 cd mqtt-dev && git pull
-sudo ./install.sh        # idempotent: refreshes code + deps, keeps your config
+sudo ./install.sh        # idempotent: refreshes code + deps, keeps your config,
+                         # and restarts both services on the new code
 ```
+
+A re-run never touches your `config.yaml` or runtime state (overrides,
+variables, history, audit trail), and only restarts Mosquitto if it had to
+write the broker config in the first place — so connected PLCs aren't bounced
+by a routine update.
 
 If you installed by hand, re-copy the `.py` files to your install dir, run
 `./venv/bin/pip install -r requirements.txt`, then
@@ -647,8 +665,9 @@ your PLCs expect — `INHIBIT`, `1`, `STOP`, or even a JSON string.
 
 Runtime files the monitor/UI create next to the install (git-ignored): the
 `weather_state.json` snapshot, `nws_location_cache.json`, `overrides.json`
-(manual device overrides), `variables.json` (operator variables), and
-`audit.log` (manual + automatic state-change trail).
+(manual device overrides), `variables.json` (operator variables), `audit.log`
+(manual + automatic state-change trail), `engine_state.json` (persisted
+hysteresis/`for:`/`changed` history), and `history.db` (metric trends).
 
 ## Development & tests
 
@@ -659,7 +678,13 @@ python test_weather_mqtt.py          # offline test suite, no network required
 CI (GitHub Actions, `.github/workflows/tests.yml`) runs the suite on Python
 3.9–3.12 on every push/PR, plus an **`install-smoke`** job that runs the real
 `install.sh` on a clean Ubuntu VM and verifies Mosquitto and both services come
-up, the dashboard responds, and the broker round-trips a message.
+up, the dashboard responds, and the broker round-trips a message — then
+**re-runs `install.sh`** over the live install to prove it's idempotent (config
+byte-for-byte unchanged, services still healthy).
+
+## License
+
+MIT — see [`LICENSE`](LICENSE).
 
 ## Notes & tips
 

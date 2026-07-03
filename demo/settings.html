@@ -160,16 +160,37 @@
     <div class="row">
       <div><label>Manual device control <span class="hint">(Auto/On/Off buttons on the dashboard)</span></label>
         <select name="web_allow_manual_control">
-          <option value="false">off (display only)</option>
-          <option value="true" selected>on (requires a login)</option>
+          <option value="false" selected>off (display only)</option>
+          <option value="true">on (requires a login)</option>
         </select><div class="field-err"></div></div>
-      <div></div>
+      <div><label>Allow MQTT publishing <span class="hint">(send messages from the MQTT console)</span></label>
+        <select name="web_allow_mqtt_publish">
+          <option value="false" selected>off (feed is read-only)</option>
+          <option value="true">on (requires a login)</option>
+        </select><div class="field-err"></div></div>
     </div>
     <p class="muted">Manual control lets an authenticated operator force a device ON/OFF from the
-      dashboard (LAN-only, audited). It requires a login; the remote status page stays read-only.</p>
+      dashboard (LAN-only, audited). <b>Allow MQTT publishing</b> lets the MQTT console send arbitrary
+      messages to the broker. Both require a login; the remote status page stays read-only.</p>
     <p class="muted">⚠ Changing <b>location</b>, the <b>MQTT connection</b>, or any <b>web interface</b>
       setting restarts the corresponding service in the live app. Thresholds, lookback, poll interval,
       QoS, retain, status topic and rules apply on the next poll automatically.</p>
+  </div>
+
+  <div class="card">
+    <h3>Metric history</h3>
+    <p class="muted">Record each cycle's numeric metrics to a small local database so the
+      <b>History</b> page can chart trends. Applies on the next poll.</p>
+    <div class="row">
+      <div><label>Enabled</label>
+        <select name="history_enabled">
+          <option value="true" selected>true</option>
+          <option value="false">false</option>
+        </select><div class="field-err"></div></div>
+      <div><label>Retention <span class="hint">(days, 1…3650)</span></label>
+        <input name="history_retention_days" value="14" data-type="int" data-min="1" data-max="3650">
+        <div class="field-err"></div></div>
+    </div>
     <button type="submit">Save settings</button>
   </div>
 </form>

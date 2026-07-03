@@ -8,7 +8,7 @@ version = "1.0.0"
 description = "A web-configurable conditions->actions controller that turns weather, schedule, operator, MQTT and HTTP inputs into on/off MQTT directives (irrigation rain-inhibit is the default preset)."
 readme = "README.md"
 requires-python = ">=3.9"
-license = { text = "MIT" }
+license = { file = "LICENSE" }
 authors = [{ name = "Seth Morrow Software" }]
 keywords = ["mqtt", "weather", "nws", "irrigation", "precipitation", "home-automation",
             "automation", "rules-engine", "scheduling"]

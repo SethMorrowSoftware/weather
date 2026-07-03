@@ -87,6 +87,12 @@ web:
   # Allow sending arbitrary messages from the MQTT console (MQTT page).
   # Default false = the live feed is read-only. Fail-closed like the above.
   allow_mqtt_publish: false
+  # Trusted-LAN escape hatch: allow the two controls above to work WITHOUT a web
+  # login. Default false. With this true (and username/password blank) the whole
+  # UI is open and anyone who can reach the page can drive MQTT -- like an
+  # anonymous broker. Only set this on an isolated/trusted network. (The
+  # cross-site request guard still applies, so a remote web page can't drive it.)
+  # allow_anonymous_control: false
   # The MQTT console subscribes so the web UI can show a live message feed:
   # mqtt_console_enabled: true            # set false to disable the subscription
   # mqtt_console_topics: ["#"]            # topics to watch (default: everything)
