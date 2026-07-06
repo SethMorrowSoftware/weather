@@ -708,6 +708,16 @@ MIN_POLL_MINUTES = 1
 MIN_LOOKBACK_HOURS = 1
 MAX_LOOKBACK_HOURS = 720      # 30 days; NWS observation history is limited anyway
 
+# A station is only trusted for accumulation if its precip reports actually
+# cover this fraction of the lookback window. It cleanly separates a working
+# gauge (~100% coverage, reports every hour incl. 0.0) from a broken/absent one
+# like an ASOS that shows +RA in every METAR yet reports precip on almost no
+# observations -- that station reads a bogus 0.0 and must be skipped.
+MIN_PRECIP_COVERAGE = 0.5
+# How many nearest-first stations to try before giving up (keeps a storm from
+# fanning out into dozens of requests against the free API).
+MAX_FALLBACK_STATIONS = 5
+
 # Config schema version. A missing `version:` is treated as 1 so every existing
 # install keeps loading unchanged. The v2 "Conditions -> Actions" schema (see
 # ROADMAP.md) is not implemented yet; the gate exists now so a v2 file is
@@ -889,6 +899,13 @@ def validate_config(cfg):
     lb = _as_number(precip.get("lookback_hours", 24), 24, "precipitation.lookback_hours")
     lb = max(MIN_LOOKBACK_HOURS, min(MAX_LOOKBACK_HOURS, int(lb)))
     precip["lookback_hours"] = lb
+    # When the nearest station has no working precip gauge, fall through to the
+    # next-nearest stations for the accumulation metric (on by default).
+    precip.setdefault("station_fallback", True)
+    precip["station_fallback"] = bool(precip["station_fallback"])
+    mfs = _as_number(precip.get("max_fallback_stations", MAX_FALLBACK_STATIONS),
+                     MAX_FALLBACK_STATIONS, "precipitation.max_fallback_stations")
+    precip["max_fallback_stations"] = max(1, min(10, int(mfs)))
 
     web = cfg.setdefault("web", {})
     web.setdefault("enabled", True)
@@ -1089,18 +1106,26 @@ def _retry_after_seconds(resp, default):
         return default
 
 
-def resolve_location(lat, lon, user_agent, station_override=None):
-    """Resolve lat/lon -> forecast grid + nearest station. Cached to disk."""
+def resolve_location(lat, lon, user_agent, station_override=None,
+                     max_stations=MAX_FALLBACK_STATIONS):
+    """Resolve lat/lon -> forecast grid + nearest observation stations. Cached.
+
+    Stores `station_ids`, a nearest-first list of up to `max_stations`
+    candidates (the override, if any, pinned to the front). Precipitation
+    accumulation walks this list until a station with a working gauge is found;
+    `station_id` (the first entry) still drives the point metrics.
+    """
     if CACHE_FILE.exists():
         try:
             cached = json.loads(CACHE_FILE.read_text())
             # Trust the cache only if it matches this location AND still has the
-            # URLs we need -- a truncated/partial cache must re-resolve, not feed
-            # dead URLs into every cycle.
+            # URLs + station list we need -- a truncated/partial or pre-fallback
+            # cache must re-resolve, not feed dead URLs into every cycle.
             if (isinstance(cached, dict)
                     and cached.get("lat") == lat and cached.get("lon") == lon
                     and cached.get("station_override") == station_override
-                    and cached.get("forecast_hourly") and cached.get("stations_url")):
+                    and cached.get("forecast_hourly") and cached.get("stations_url")
+                    and cached.get("station_ids")):
                 LOG.info("Using cached NWS location data")
                 return cached
         except Exception:
@@ -1115,6 +1140,27 @@ def resolve_location(lat, lon, user_agent, station_override=None):
         raise RuntimeError(
             f"NWS /points response missing forecast/station URLs for {lat},{lon} "
             "(is the location inside US coverage?)")
+
+    # NWS returns observation stations ordered by distance from the point, so
+    # this list is already nearest-first.
+    nearest = []
+    try:
+        stations = nws_get(stations_url, user_agent)
+        for feat in stations.get("features", []):
+            sid = (feat.get("properties") or {}).get("stationIdentifier")
+            if sid and sid not in nearest:
+                nearest.append(sid)
+    except Exception as e:
+        LOG.warning("Could not resolve observation stations: %s", e)
+
+    if station_override:
+        # Pin the operator's choice first, keep the rest as fallbacks.
+        station_ids = [station_override] + [s for s in nearest if s != station_override]
+    else:
+        station_ids = nearest
+    if max_stations and max_stations > 0:
+        station_ids = station_ids[:max_stations]
+
     info = {
         "lat": lat,
         "lon": lon,
@@ -1122,20 +1168,12 @@ def resolve_location(lat, lon, user_agent, station_override=None):
         "forecast_hourly": forecast_hourly,
         "stations_url": stations_url,
         "grid_id": props.get("gridId"),
-        "station_id": station_override,
+        "station_ids": station_ids,
+        "station_id": station_ids[0] if station_ids else station_override,
     }
-    if not station_override:
-        try:
-            stations = nws_get(info["stations_url"], user_agent)
-            feats = stations.get("features", [])
-            if feats:
-                info["station_id"] = feats[0]["properties"]["stationIdentifier"]
-        except Exception as e:
-            LOG.warning("Could not resolve observation station: %s", e)
-
     _atomic_write(CACHE_FILE, json.dumps(info))
-    LOG.info("Resolved grid %s; observation station %s",
-             info.get("grid_id"), info.get("station_id"))
+    LOG.info("Resolved grid %s; stations (nearest-first): %s",
+             info.get("grid_id"), ", ".join(station_ids) or "none")
     return info
 
 
@@ -1195,24 +1233,6 @@ def detect_raining(obs_props):
     return False if seen else None
 
 
-def fetch_precip_accum_in(station_id, user_agent, hours, now=None):
-    """Measured precip over the last `hours`, in inches.
-
-    Prefers the hourly `precipitationLastHour` group, de-duplicated into hourly
-    buckets so more-frequent observations don't double-count. Stations that
-    never emit the hourly group (common outside full ASOS sites) fall back to
-    the coarser 3-/6-hour synoptic totals. Returns None -- so a rule holds its
-    last state instead of wrongly reading "dry" -- when there is a true data
-    gap, or when it is visibly precipitating but the station reports no usable
-    gauge value. See `_accumulate_precip` for the full precedence.
-    """
-    now = now or datetime.now(timezone.utc)
-    start = (now - timedelta(hours=hours)).strftime("%Y-%m-%dT%H:%M:%SZ")
-    url = f"{NWS_API}/stations/{station_id}/observations?start={quote(start)}"
-    data = nws_get(url, user_agent)
-    return _accumulate_precip(data, hours, now)
-
-
 # Coarser accumulation groups NWS reports at synoptic times, longest first. A
 # station that omits the hourly `precipitationLastHour` group often still
 # reports these, so they are the fallback when no hourly value is available.
@@ -1246,27 +1266,53 @@ def _tile_coarse_precip(intervals, now):
     return total if used else None
 
 
-def _accumulate_precip(data, hours, now):
-    """Pure helper (no network) so it can be unit-tested with a fixture.
+def _merged_coverage_seconds(spans, lo, hi):
+    """Total seconds covered by the union of (start, end) spans, each clamped to
+    [lo, hi]. Overlaps count once."""
+    clamped = []
+    for s, e in spans:
+        s = max(s, lo)
+        e = min(e, hi)
+        if e > s:
+            clamped.append((s, e))
+    if not clamped:
+        return 0.0
+    clamped.sort()
+    covered = 0.0
+    cur_s, cur_e = clamped[0]
+    for s, e in clamped[1:]:
+        if s > cur_e:                       # gap -> bank the run, start a new one
+            covered += (cur_e - cur_s).total_seconds()
+            cur_s, cur_e = s, e
+        else:
+            cur_e = max(cur_e, e)
+    covered += (cur_e - cur_s).total_seconds()
+    return covered
 
-    Precedence, in order:
-      1. Hourly `precipitationLastHour`, bucketed by clock-hour (max within an
-         hour) so sub-hourly obs don't double-count. Authoritative when present.
-      2. If NO hourly value is reported anywhere in the window, fall back to the
-         coarser 3-/6-hour synoptic totals, tiled without overlap. Summing only
-         the hourly group made stations that never emit it read a flat 0.0 even
-         while it poured.
-      3. With no precip value at all: 0.0 (dry) if the station was reporting but
-         quiet; None if there were no observations (a true gap); and None -- not
-         a false 0.0 -- if present weather says it is precipitating at the
-         station, since a rain-inhibit rule must not resolve to "dry" mid-storm.
+
+def _precip_stats(data, hours, now):
+    """Parse one station's observations feed into precip stats (no network).
+
+    Returns a dict:
+      inches:   measured accumulation over the window, or None if the station
+                reported no precip value at all;
+      coverage: fraction (0.0-1.0) of the window actually spanned by the
+                station's precip reports -- the trust signal for whether it has
+                a working gauge (see MIN_PRECIP_COVERAGE);
+      saw_obs:  the station reported at least one observation in the window;
+      raining:  present weather indicated precipitation at the station.
+
+    Accumulation precedence: hourly `precipitationLastHour` (bucketed by
+    clock-hour, max within an hour) when present, else the coarser 3-/6-hour
+    synoptic totals tiled without overlap.
     """
     cutoff = now - timedelta(hours=hours)
+    window_secs = max((now - cutoff).total_seconds(), 1.0)
     buckets = {}             # "YYYY-MM-DDTHH" -> max mm reported in that hour
     coarse = []              # (start, end, mm) 3h/6h totals, fallback only
-    saw_obs = False          # station reported ANY observation in the window?
-    saw_precip_value = False # ...carrying a non-null precip value (has a gauge)?
-    precip_indicated = False # present weather says it's precipitating here now
+    spans = []               # (start, end) of every non-null precip report
+    saw_obs = False
+    raining = False
 
     for feat in data.get("features", []):
         p = feat.get("properties", {})
@@ -1284,37 +1330,99 @@ def _accumulate_precip(data, hours, now):
         when = when.astimezone(timezone.utc)
         saw_obs = True
         if detect_raining(p) is True:
-            precip_indicated = True
+            raining = True
 
         plh = p.get("precipitationLastHour") or {}
         mm = to_mm(plh.get("value"), plh.get("unitCode"))
         if mm is not None:
-            saw_precip_value = True
-            key = when.strftime("%Y-%m-%dT%H")
-            buckets[key] = max(buckets.get(key, 0.0), mm)
+            buckets[when.strftime("%Y-%m-%dT%H")] = max(
+                buckets.get(when.strftime("%Y-%m-%dT%H"), 0.0), mm)
+            spans.append((when - timedelta(hours=1), when))
 
         for field, span in _COARSE_PRECIP_FIELDS:
             cmm = to_mm((p.get(field) or {}).get("value"),
                         (p.get(field) or {}).get("unitCode"))
             if cmm is not None:
-                saw_precip_value = True
                 coarse.append((when - span, when, cmm))
+                spans.append((when - span, when))
 
-    # 1. Hourly group -- authoritative when the station reports it.
     if buckets:
-        return mm_to_in(sum(buckets.values()))
+        inches = mm_to_in(sum(buckets.values()))
+    else:
+        total_mm = _tile_coarse_precip(coarse, now)
+        inches = None if total_mm is None else mm_to_in(total_mm)
 
-    # 2. Fall back to the coarser synoptic totals.
-    total_mm = _tile_coarse_precip(coarse, now)
-    if total_mm is not None:
-        return mm_to_in(total_mm)
+    coverage = _merged_coverage_seconds(spans, cutoff, now) / window_secs
+    return {"inches": inches, "coverage": coverage,
+            "saw_obs": saw_obs, "raining": raining}
 
-    # 3. No precip value anywhere in the window.
-    if not saw_obs:
+
+def _accumulate_precip(data, hours, now):
+    """Single-station accumulation in inches, or None when precip is unknown.
+
+    Pure helper (no network) so it can be unit-tested with a fixture. Returns
+    the measured accumulation when the station reported any precip value; 0.0
+    when it was reporting but quiet (dry); and None -- so a rule holds its last
+    state instead of wrongly reading "dry" -- when there were no observations at
+    all, or it is visibly precipitating but the station reports no gauge value.
+    """
+    st = _precip_stats(data, hours, now)
+    if st["inches"] is not None:
+        return st["inches"]
+    if not st["saw_obs"]:
         return None                       # no observations -> true data gap
-    if precip_indicated and not saw_precip_value:
+    if st["raining"]:
         return None                       # raining, but the station has no gauge
     return 0.0                            # station reporting, all dry
+
+
+def fetch_precip_accum_in(station_id, user_agent, hours, now=None):
+    """Measured precip over the last `hours` for a single station, in inches.
+    See `_accumulate_precip` for the value semantics."""
+    now = now or datetime.now(timezone.utc)
+    start = (now - timedelta(hours=hours)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    url = f"{NWS_API}/stations/{station_id}/observations?start={quote(start)}"
+    data = nws_get(url, user_agent)
+    return _accumulate_precip(data, hours, now)
+
+
+def fetch_precip_accum_best(station_ids, user_agent, hours, now=None,
+                            max_stations=MAX_FALLBACK_STATIONS):
+    """Measured precip over the last `hours`, walking `station_ids` nearest-first
+    until one has a gauge that actually covers the window.
+
+    Returns (inches, station_id). A station whose observations show rain but
+    report precip on almost none of them -- a dead/absent gauge, e.g. some ASOS
+    sites -- has too little coverage to trust, so it is skipped for the next
+    nearest station rather than publishing its bogus 0.0. If no station in range
+    reports usable data, returns (None, None) so the rule holds its last state.
+    """
+    now = now or datetime.now(timezone.utc)
+    candidates = [s for s in (station_ids or []) if s][:max_stations]
+    primary = candidates[0] if candidates else None
+    tried = []
+    for sid in candidates:
+        start = (now - timedelta(hours=hours)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        url = f"{NWS_API}/stations/{sid}/observations?start={quote(start)}"
+        try:
+            data = nws_get(url, user_agent)
+        except Exception as e:
+            LOG.warning("Precip: station %s unreachable (%s); trying next", sid, e)
+            continue
+        tried.append(sid)
+        st = _precip_stats(data, hours, now)
+        if st["inches"] is not None and st["coverage"] >= MIN_PRECIP_COVERAGE:
+            if sid != primary:
+                LOG.info("Precip: %s lacked a usable gauge; using nearby %s "
+                         "(coverage %.0f%%) -> %.2f in",
+                         primary, sid, st["coverage"] * 100, st["inches"])
+            return st["inches"], sid
+        LOG.info("Precip: station %s not usable for accumulation "
+                 "(coverage %.0f%%, raining=%s); trying next",
+                 sid, st["coverage"] * 100, st["raining"])
+    LOG.warning("Precip: no station within range reported usable accumulation "
+                "(tried %s); holding last state", ", ".join(tried) or "none")
+    return None, None
 
 
 def fetch_conditions(loc, user_agent, lookback_hours):
@@ -1365,9 +1473,13 @@ def fetch_conditions(loc, user_agent, lookback_hours):
             LOG.warning("Latest observation unavailable: %s", e)
 
         # --- Measured precip accumulation over the lookback window ---
+        # Walk nearest-first through the resolved stations so a local site with
+        # a dead/absent precip gauge (reports rain but no accumulation) doesn't
+        # peg the metric at a bogus 0.0 -- fall through to the next station.
         try:
-            metrics["precip_accum_in"] = fetch_precip_accum_in(
-                loc["station_id"], user_agent, lookback_hours)
+            station_ids = loc.get("station_ids") or [loc["station_id"]]
+            metrics["precip_accum_in"], _ = fetch_precip_accum_best(
+                station_ids, user_agent, lookback_hours)
         except Exception as e:
             LOG.warning("Precip accumulation unavailable: %s", e)
     else:
@@ -2566,6 +2678,10 @@ def main():
     lat = cfg["location"]["latitude"]
     lon = cfg["location"]["longitude"]
     station_override = cfg["location"].get("station_id")
+    # Precip station fallback breadth: 1 station when disabled, else the config
+    # cap. resolve_location stores this many nearest-first candidates.
+    max_stations = (cfg["precipitation"]["max_fallback_stations"]
+                    if cfg["precipitation"]["station_fallback"] else 1)
     mq = cfg["mqtt"]
 
     stop = {"flag": False}
@@ -2597,7 +2713,7 @@ def main():
     delay = 5
     while not stop["flag"]:
         try:
-            loc = resolve_location(lat, lon, ua, station_override)
+            loc = resolve_location(lat, lon, ua, station_override, max_stations)
             break
         except Exception as e:
             LOG.error("Location resolution failed (%s); retrying in %ds", e, delay)

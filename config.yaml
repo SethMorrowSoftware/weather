@@ -15,9 +15,10 @@ location:
   latitude: 41.2459      # <-- set to your facility
   longitude: -74.2735    # <-- set to your facility
   # Optional: pin a specific NWS observation station (4-letter id, e.g. "KMGJ").
-  # Leave unset to auto-pick the nearest one. Set this if the nearest station
-  # does not report precipitation -- find candidates at:
-  #   https://api.weather.gov/points/<lat>,<lon>/stations
+  # Leave unset to auto-pick the nearest one. The monitor already falls back to
+  # nearby stations for rainfall when the nearest lacks a working gauge (see
+  # precipitation.station_fallback), so pin this only to force a preferred site.
+  # Find candidates at:  https://api.weather.gov/points/<lat>,<lon>/stations
   # station_id: "KMGJ"
 
 # NWS requires a User-Agent that identifies your app + a real contact, so they
@@ -69,6 +70,12 @@ precipitation:
   # Rolling window (hours) used to total measured rainfall into the
   # `precip_accum_in` metric. The irrigation rule below compares against it.
   lookback_hours: 24
+  # Some ASOS/AWOS sites report present weather (RA) but no precip accumulation
+  # -- their gauge is dead or absent, so they read a bogus 0.0 during rain. With
+  # fallback on, the monitor walks to the next-nearest stations until one has a
+  # gauge that actually covers the window, instead of trusting that 0.0.
+  station_fallback: true
+  max_fallback_stations: 5   # how many nearest-first stations to try (1-10)
 
 # --- Web interface ---------------------------------------------------------
 # Optional dashboard + config editor (webui.py). Reachable at http://host:port.

@@ -1,18 +1,21 @@
 #!/usr/bin/env python3
-"""Diagnose precip_accum_in: show what the NWS station reports vs. what the
-monitor computes, so you can verify the measured-rainfall metric is accurate.
+"""Diagnose precip_accum_in: show what each nearby NWS station reports vs. what
+the monitor computes, so you can verify the measured-rainfall metric.
 
-It reuses weather_mqtt's own NWS client and accumulation logic, so the
-"precip_accum_in" it prints is exactly what the monitor would publish.
+It reuses weather_mqtt's own NWS client and accumulation logic, so the value it
+prints is exactly what the monitor would publish -- including the nearest-first
+station fallback (some ASOS sites report rain but no usable precip gauge).
 
 Usage:
     python check_rain.py                       # use config.yaml
     python check_rain.py --hours 12
     python check_rain.py --lat 41.24 --lon -74.27 --station KMGJ
+    python check_rain.py --raw                 # also dump every observation
 """
 import argparse
 import sys
 from datetime import datetime, timezone, timedelta
+from urllib.parse import quote
 
 import weather_mqtt as w
 
@@ -34,13 +37,36 @@ def _load_defaults(path):
         "station": loc.get("station_id"),
         "user_agent": cfg.get("user_agent"),
         "hours": precip.get("lookback_hours", 24),
+        "max_stations": precip.get("max_fallback_stations",
+                                   w.MAX_FALLBACK_STATIONS),
     }
 
 
 def _mm(group):
-    """Coax an NWS precip group {value, unitCode} to millimeters, or None."""
     group = group or {}
     return w.to_mm(group.get("value"), group.get("unitCode"))
+
+
+def _fetch_obs(station, ua, hours, now):
+    start = (now - timedelta(hours=hours)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    url = f"{w.NWS_API}/stations/{station}/observations?start={quote(start)}"
+    return w.nws_get(url, ua)
+
+
+def _dump_raw(feats):
+    print(f"\n{'timestamp':21} {'1h':>6} {'3h':>6} {'6h':>6}  rain?  raw METAR")
+    print("-" * 92)
+    for f in feats:
+        p = f.get("properties", {})
+        cells = " ".join(
+            f"{('-' if v is None else round(v, 1))!s:>6}" for v in
+            (_mm(p.get("precipitationLastHour")),
+             _mm(p.get("precipitationLast3Hours")),
+             _mm(p.get("precipitationLast6Hours"))))
+        flag = {True: "RAIN", False: "dry", None: "?"}[w.detect_raining(p)]
+        raw = (p.get("rawMessage") or "").strip()
+        print(f"{p.get('timestamp',''):21} {cells}  {flag:>5}  {raw[:44]}")
+    print("-" * 92)
 
 
 def main():
@@ -49,8 +75,10 @@ def main():
     ap.add_argument("--config", default="config.yaml")
     ap.add_argument("--lat", type=float)
     ap.add_argument("--lon", type=float)
-    ap.add_argument("--station", help="pin a station id (else auto-pick nearest)")
+    ap.add_argument("--station", help="pin a station id (tried first)")
     ap.add_argument("--hours", type=int, help="lookback window (default: config)")
+    ap.add_argument("--raw", action="store_true",
+                    help="also dump every observation for the first station")
     args = ap.parse_args()
 
     d = _load_defaults(args.config)
@@ -58,6 +86,7 @@ def main():
     lon = args.lon if args.lon is not None else d.get("lon")
     station = args.station or d.get("station")
     hours = args.hours if args.hours is not None else int(d.get("hours") or 24)
+    max_stations = int(d.get("max_stations") or w.MAX_FALLBACK_STATIONS)
     ua = d.get("user_agent")
 
     if lat is None or lon is None:
@@ -67,48 +96,50 @@ def main():
 
     print(f"location: {lat},{lon}   window: last {hours}h   user_agent: {ua}\n")
 
-    # Resolve the station the same way the monitor does (respects an override).
-    loc = w.resolve_location(lat, lon, ua, station_override=station)
-    stn = loc.get("station_id")
-    if not stn:
-        sys.exit("Could not resolve an observation station for this location.")
-    print(f"station: {stn}{'  (pinned)' if station else '  (nearest, auto)'}\n")
+    loc = w.resolve_location(lat, lon, ua, station_override=station,
+                             max_stations=max_stations)
+    candidates = loc.get("station_ids") or ([loc["station_id"]] if loc.get("station_id") else [])
+    if not candidates:
+        sys.exit("Could not resolve any observation station for this location.")
+    print(f"candidate stations (nearest-first): {', '.join(candidates)}\n")
 
-    # Same request the monitor makes for measured accumulation.
-    from urllib.parse import quote
-    start = (datetime.now(timezone.utc) - timedelta(hours=hours)).strftime(
-        "%Y-%m-%dT%H:%M:%SZ")
-    url = f"{w.NWS_API}/stations/{stn}/observations?start={quote(start)}"
-    data = w.nws_get(url, ua)
-    feats = data.get("features", [])
+    now = datetime.now(timezone.utc)
+    print(f"{'station':8} {'obs':>4} {'coverage':>9} {'precip_in':>10}  verdict")
+    print("-" * 60)
+    chosen = None
+    first_feats = None
+    for sid in candidates:
+        try:
+            data = _fetch_obs(sid, ua, hours, now)
+        except Exception as e:
+            print(f"{sid:8} {'-':>4} {'-':>9} {'-':>10}  fetch failed: {e}")
+            continue
+        feats = data.get("features", [])
+        if first_feats is None:
+            first_feats = feats
+        st = w._precip_stats(data, hours, now)
+        usable = st["inches"] is not None and st["coverage"] >= w.MIN_PRECIP_COVERAGE
+        verdict = "USE (gauge OK)" if usable else "skip (no usable gauge)"
+        inches = "-" if st["inches"] is None else f"{st['inches']:.2f}"
+        print(f"{sid:8} {len(feats):>4} {st['coverage']*100:>8.0f}% "
+              f"{inches:>10}  {verdict}")
+        if usable and chosen is None:
+            chosen = sid
+            break
+    print("-" * 60)
 
-    print(f"{len(feats)} observations in window\n")
-    print(f"{'timestamp':21} {'1h':>6} {'3h':>6} {'6h':>6}  rain?  raw METAR")
-    print("-" * 92)
-    any_value = False
-    for f in feats:
-        p = f.get("properties", {})
-        p1, p3, p6 = (_mm(p.get("precipitationLastHour")),
-                      _mm(p.get("precipitationLast3Hours")),
-                      _mm(p.get("precipitationLast6Hours")))
-        if any(v is not None for v in (p1, p3, p6)):
-            any_value = True
-        raining = w.detect_raining(p)
-        flag = {True: "RAIN", False: "dry", None: "?"}[raining]
-        cells = " ".join(f"{('-' if v is None else round(v, 1))!s:>6}"
-                         for v in (p1, p3, p6))
-        raw = (p.get("rawMessage") or "").strip()
-        print(f"{p.get('timestamp',''):21} {cells}  {flag:>5}  {raw[:44]}")
+    inches, used = w.fetch_precip_accum_best(candidates, ua, hours, now,
+                                             max_stations=max_stations)
+    if used:
+        print(f"\nprecip_accum_in = {inches} in   (from station {used})")
+    else:
+        print("\nprecip_accum_in = None (unknown -> rule holds last state): "
+              "no station in range reported a usable gauge.\n"
+              "Widen precipitation.max_fallback_stations, or pin a known-good "
+              "--station / location.station_id.")
 
-    print("-" * 92)
-    result = w._accumulate_precip(data, hours, datetime.now(timezone.utc))
-    print(f"\nprecip_accum_in (what the monitor publishes): {result} "
-          f"{'in' if result is not None else '(unknown -> rule holds last state)'}")
-
-    if not any_value and feats:
-        print("\n>>> This station reports NO precip value (no 1h/3h/6h group) in the\n"
-              "    window. If the 'rain?' column shows RAIN above, it has no usable\n"
-              "    gauge -- pin a --station that reports precipitation in config.yaml.")
+    if args.raw and first_feats:
+        _dump_raw(first_feats)
 
 
 if __name__ == "__main__":

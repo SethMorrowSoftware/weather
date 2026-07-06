@@ -3,7 +3,7 @@
 
 Run:  python test_weather_mqtt.py
 """
-from datetime import datetime, timezone
+from datetime import datetime, timedelta as _td, timezone
 
 import weather_mqtt as w
 
@@ -32,6 +32,44 @@ def _obs(ts, value_mm, unit="wmoUnit:mm"):
     return {"properties": {"timestamp": ts,
                            "precipitationLastHour": {"value": value_mm,
                                                      "unitCode": unit}}}
+
+
+def _rainy_null_obs(now, hours=24):
+    """A KMGJ-style feed: obs every 30 min showing rain, but precipitationLastHour
+    is null throughout except two stray 0.0 readings (a dead/absent gauge)."""
+    feats = []
+    for i in range(hours * 2):
+        t = now - _td(minutes=30 * i)
+        val = 0.0 if i in (2, 26) else None      # two stray non-null readings
+        feats.append({"properties": {
+            "timestamp": t.isoformat(),
+            "textDescription": "Heavy Rain",
+            "precipitationLastHour": {"value": val, "unitCode": "wmoUnit:mm"}}})
+    return feats
+
+
+def _hourly_gauge_obs(now, hours=24, wet_hours=3, wet_mm=2.54):
+    """A working-gauge feed: a precipitationLastHour value every hour (0.0 when
+    dry), covering the whole window. `wet_hours` of `wet_mm` set the total."""
+    feats = []
+    for k in range(hours):
+        t = now - _td(hours=k)
+        val = wet_mm if k < wet_hours else 0.0
+        feats.append({"properties": {
+            "timestamp": t.isoformat(),
+            "textDescription": "Rain" if val else "Clear",
+            "precipitationLastHour": {"value": val, "unitCode": "wmoUnit:mm"}}})
+    return feats
+
+
+def _fake_nws(station_data):
+    """Stand-in for w.nws_get that dispatches on the station id in the URL."""
+    def _get(url, ua, **kw):
+        for sid, data in station_data.items():
+            if f"/stations/{sid}/observations" in url:
+                return data
+        return {"features": []}
+    return _get
 
 
 def test_unit_conversion():
@@ -157,6 +195,94 @@ def test_accumulation_raining_but_no_gauge_reads_unknown():
                         "precipitationLastHour": {"value": None}}},
     ]}
     assert w._accumulate_precip(data, 24, now) is None
+
+
+def test_precip_stats_coverage_distinguishes_dead_gauge():
+    # The real KMGJ case: rain in every ob, but precip reported on almost none of
+    # them -> inches happens to be 0.0 (two stray readings) but coverage is tiny,
+    # which is how the fallback knows the gauge is unusable.
+    now = datetime(2026, 7, 6, 13, 0, tzinfo=timezone.utc)
+    dead = w._precip_stats({"features": _rainy_null_obs(now, 24)}, 24, now)
+    assert dead["raining"] is True
+    assert dead["inches"] == 0.0
+    assert dead["coverage"] < w.MIN_PRECIP_COVERAGE
+    # A working gauge covers the whole window and totals its hourly values.
+    good = w._precip_stats({"features": _hourly_gauge_obs(now, 24)}, 24, now)
+    assert good["coverage"] >= 0.9
+    assert good["inches"] == 0.30
+
+
+def test_precip_fallback_uses_next_station_when_gauge_dead():
+    now = datetime(2026, 7, 6, 13, 0, tzinfo=timezone.utc)
+    data = {"KMGJ": {"features": _rainy_null_obs(now, 24)},      # dead gauge
+            "KSWF": {"features": _hourly_gauge_obs(now, 24)}}     # good, 0.30 in
+    real = w.nws_get
+    w.nws_get = _fake_nws(data)
+    try:
+        inches, used = w.fetch_precip_accum_best(["KMGJ", "KSWF"], "ua", 24, now)
+    finally:
+        w.nws_get = real
+    assert used == "KSWF"
+    assert inches == 0.30
+
+
+def test_precip_fallback_prefers_primary_when_usable():
+    now = datetime(2026, 7, 6, 13, 0, tzinfo=timezone.utc)
+    data = {"KMGJ": {"features": _hourly_gauge_obs(now, 24)},
+            "KSWF": {"features": _hourly_gauge_obs(now, 24, wet_hours=6)}}
+    real = w.nws_get
+    w.nws_get = _fake_nws(data)
+    try:
+        inches, used = w.fetch_precip_accum_best(["KMGJ", "KSWF"], "ua", 24, now)
+    finally:
+        w.nws_get = real
+    assert used == "KMGJ"          # nearest is usable -> no fallback, no KSWF fetch
+    assert inches == 0.30
+
+
+def test_precip_fallback_all_dead_returns_none():
+    now = datetime(2026, 7, 6, 13, 0, tzinfo=timezone.utc)
+    data = {"KMGJ": {"features": _rainy_null_obs(now, 24)},
+            "KSWF": {"features": _rainy_null_obs(now, 24)}}
+    real = w.nws_get
+    w.nws_get = _fake_nws(data)
+    try:
+        inches, used = w.fetch_precip_accum_best(["KMGJ", "KSWF"], "ua", 24, now)
+    finally:
+        w.nws_get = real
+    assert used is None            # nobody usable -> hold last state
+    assert inches is None
+
+
+def test_resolve_location_builds_nearest_first_station_list():
+    import tempfile, pathlib
+    points = {"properties": {"forecastHourly": "https://api/hourly",
+                             "observationStations": "https://api/stations",
+                             "gridId": "OKX"}}
+    stations = {"features": [{"properties": {"stationIdentifier": "KMGJ"}},
+                             {"properties": {"stationIdentifier": "KSWF"}},
+                             {"properties": {"stationIdentifier": "KPOU"}}]}
+
+    def fake(url, ua, **kw):
+        if "/points/" in url:
+            return points
+        if url == "https://api/stations":
+            return stations
+        return {"features": []}
+
+    real_get, real_cache = w.nws_get, w.CACHE_FILE
+    w.nws_get = fake
+    w.CACHE_FILE = pathlib.Path(tempfile.mkdtemp()) / "cache.json"
+    try:
+        loc = w.resolve_location(40.0, -74.0, "ua", None, max_stations=5)
+        assert loc["station_ids"] == ["KMGJ", "KSWF", "KPOU"]
+        assert loc["station_id"] == "KMGJ"
+        # A pinned override is tried first, with the rest kept as fallbacks.
+        loc2 = w.resolve_location(40.0, -74.0, "ua", "KSWF", max_stations=5)
+        assert loc2["station_ids"][0] == "KSWF"
+        assert set(loc2["station_ids"]) == {"KSWF", "KMGJ", "KPOU"}
+    finally:
+        w.nws_get, w.CACHE_FILE = real_get, real_cache
 
 
 def test_detect_raining():

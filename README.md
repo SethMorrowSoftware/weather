@@ -46,13 +46,17 @@ on/off.
 ## How it works
 
 1. On first run it resolves your latitude/longitude to an NWS forecast grid and
-   the nearest observation station (cached to `nws_location_cache.json`).
+   the nearest observation stations, keeping a nearest-first list for fallback
+   (cached to `nws_location_cache.json`).
 2. Every `poll_interval_minutes` it fetches:
    - **measured rainfall** over the rolling `lookback_hours` window
      (`precip_accum_in`), summed from the station's hourly observations and
      de-duplicated so it never double-counts; if the station doesn't report the
-     hourly group it falls back to the coarser 3-/6-hour synoptic totals, and if
-     it is visibly raining but the station reports no gauge value at all the
+     hourly group it falls back to the coarser 3-/6-hour synoptic totals. Some
+     ASOS sites report rain but no working precip gauge (they'd read a bogus
+     `0.0`); when the nearest station's reports don't actually cover the window
+     the monitor walks to the next-nearest stations until one does (see
+     `precipitation.station_fallback`). If none in range has a usable gauge the
      metric reads *unknown* rather than a false `0.0`;
    - whether it is **precipitating right now** (`is_raining`), from the
      station's current present-weather;
@@ -694,10 +698,14 @@ MIT — see [`LICENSE`](LICENSE).
 - **Fail-safe behavior:** if a metric is unavailable a cycle (station gap,
   network blip), the affected rule's state is left **unchanged** — the last
   retained directive stands rather than flipping to a wrong value.
-- **Pick a station that reports precip.** Some ASOS/AWOS stations report no
-  precipitation at all. The monitor falls back from the hourly group to the
-  3-/6-hour totals, but if `precip_accum_in` still reads `None` (unknown) during
-  rain in `--dry-run`, set `location.station_id` to a nearby station with a gauge.
+- **Precip station fallback is automatic.** Some ASOS/AWOS stations report no
+  usable precipitation even mid-storm. The monitor falls back through the
+  hourly → 3-/6-hour groups, then to the next-nearest **stations**
+  (`precipitation.station_fallback`, up to `max_fallback_stations`), until one
+  has a gauge that covers the window. Run `python check_rain.py` to see each
+  candidate's coverage and which station it picks. If `precip_accum_in` still
+  reads `None` during rain, widen `max_fallback_stations` or pin a known-good
+  `location.station_id`.
 - **Retained messages:** `retain: true` means the broker holds each topic's last
   value, so a PLC that connects later immediately gets the current state.
 - **Broker restarts:** set `always_publish: true` to re-send every rule's state
@@ -718,12 +726,13 @@ MIT — see [`LICENSE`](LICENSE).
 - **403 from weather.gov** → your `user_agent` is missing or rejected; set a real
   contact string. The monitor keeps retrying with backoff, so fix it in the UI
   (or `config.yaml`) and it recovers on the next cycle without a restart.
-- **`precip_accum_in` reads 0 while it's pouring** → the nearest station reports
-  no gauge value (neither the hourly nor the 3-/6-hour totals). Run
-  `python check_rain.py <lat> <lon>` to see the raw METARs, then pin a
-  `station_id` that reports precipitation. When it's raining and the station has
-  no gauge, the metric now reads *unknown* (holds last state) rather than a
-  false `0.0` that would let irrigation run.
+- **`precip_accum_in` reads 0 (or unknown) while it's pouring** → the nearest
+  station has a dead/absent precip gauge (rain in every METAR, but no hourly or
+  3-/6-hour value). The monitor already walks to the next-nearest stations, but
+  if all in range are gaugeless it holds *unknown*. Run `python check_rain.py`
+  to see each candidate's coverage and which station wins; if none is usable,
+  raise `precipitation.max_fallback_stations` or pin a known-good `station_id`.
+  Add `--raw` to dump the underlying observations/METARs.
 - **Web UI shows "No status yet"** → start `weather_mqtt.py`; it writes
   `weather_state.json` on its first poll.
 - **Metric `... unavailable this cycle`** → a feed returned a gap; the rule's
