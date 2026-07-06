@@ -50,7 +50,10 @@ on/off.
 2. Every `poll_interval_minutes` it fetches:
    - **measured rainfall** over the rolling `lookback_hours` window
      (`precip_accum_in`), summed from the station's hourly observations and
-     de-duplicated so it never double-counts;
+     de-duplicated so it never double-counts; if the station doesn't report the
+     hourly group it falls back to the coarser 3-/6-hour synoptic totals, and if
+     it is visibly raining but the station reports no gauge value at all the
+     metric reads *unknown* rather than a false `0.0`;
    - whether it is **precipitating right now** (`is_raining`), from the
      station's current present-weather;
    - plus temperature, humidity, wind, forecast precip probability, and active
@@ -691,9 +694,10 @@ MIT — see [`LICENSE`](LICENSE).
 - **Fail-safe behavior:** if a metric is unavailable a cycle (station gap,
   network blip), the affected rule's state is left **unchanged** — the last
   retained directive stands rather than flipping to a wrong value.
-- **Pick a station that reports precip.** Some ASOS/AWOS stations don't report
-  hourly precipitation. If `precip_accum_in` is always `None` in `--dry-run`,
-  set `location.station_id` to a nearby station that does.
+- **Pick a station that reports precip.** Some ASOS/AWOS stations report no
+  precipitation at all. The monitor falls back from the hourly group to the
+  3-/6-hour totals, but if `precip_accum_in` still reads `None` (unknown) during
+  rain in `--dry-run`, set `location.station_id` to a nearby station with a gauge.
 - **Retained messages:** `retain: true` means the broker holds each topic's last
   value, so a PLC that connects later immediately gets the current state.
 - **Broker restarts:** set `always_publish: true` to re-send every rule's state
@@ -714,8 +718,12 @@ MIT — see [`LICENSE`](LICENSE).
 - **403 from weather.gov** → your `user_agent` is missing or rejected; set a real
   contact string. The monitor keeps retrying with backoff, so fix it in the UI
   (or `config.yaml`) and it recovers on the next cycle without a restart.
-- **`precip_accum_in` is always null** → the station doesn't report hourly
-  precipitation; pin a different `station_id`.
+- **`precip_accum_in` reads 0 while it's pouring** → the nearest station reports
+  no gauge value (neither the hourly nor the 3-/6-hour totals). Run
+  `python check_rain.py <lat> <lon>` to see the raw METARs, then pin a
+  `station_id` that reports precipitation. When it's raining and the station has
+  no gauge, the metric now reads *unknown* (holds last state) rather than a
+  false `0.0` that would let irrigation run.
 - **Web UI shows "No status yet"** → start `weather_mqtt.py`; it writes
   `weather_state.json` on its first poll.
 - **Metric `... unavailable this cycle`** → a feed returned a gap; the rule's

@@ -1198,12 +1198,13 @@ def detect_raining(obs_props):
 def fetch_precip_accum_in(station_id, user_agent, hours, now=None):
     """Measured precip over the last `hours`, in inches.
 
-    Sums each hour's `precipitationLastHour`, de-duplicated into hourly
-    buckets so more-frequent observations don't double-count. A station that
-    IS reporting observations but with null `precipitationLastHour` (how most
-    ASOS stations report a dry hour) reads as 0.0; only a total absence of
-    observations returns None (so a rule holds its last state during a true
-    data gap rather than wrongly reading "dry").
+    Prefers the hourly `precipitationLastHour` group, de-duplicated into hourly
+    buckets so more-frequent observations don't double-count. Stations that
+    never emit the hourly group (common outside full ASOS sites) fall back to
+    the coarser 3-/6-hour synoptic totals. Returns None -- so a rule holds its
+    last state instead of wrongly reading "dry" -- when there is a true data
+    gap, or when it is visibly precipitating but the station reports no usable
+    gauge value. See `_accumulate_precip` for the full precedence.
     """
     now = now or datetime.now(timezone.utc)
     start = (now - timedelta(hours=hours)).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -1212,11 +1213,61 @@ def fetch_precip_accum_in(station_id, user_agent, hours, now=None):
     return _accumulate_precip(data, hours, now)
 
 
+# Coarser accumulation groups NWS reports at synoptic times, longest first. A
+# station that omits the hourly `precipitationLastHour` group often still
+# reports these, so they are the fallback when no hourly value is available.
+_COARSE_PRECIP_FIELDS = (
+    ("precipitationLast6Hours", timedelta(hours=6)),
+    ("precipitationLast3Hours", timedelta(hours=3)),
+)
+
+
+def _tile_coarse_precip(intervals, now):
+    """Sum non-overlapping precip intervals, walking back from `now` and
+    preferring the longest interval at each step so overlapping 3h/6h totals
+    tile without double-counting (a 3h total is a subset of the 6h total that
+    contains it). Each interval is (start, end, mm). Returns total mm, or None
+    if there was nothing to tile."""
+    if not intervals:
+        return None
+    # end descending; for a shared end, longest span (earliest start) first so
+    # the greedy walk takes the 6h total over the 3h total nested inside it.
+    ordered = sorted(intervals, key=lambda iv: iv[0])          # start asc
+    ordered.sort(key=lambda iv: iv[1], reverse=True)           # end desc (stable)
+    total = 0.0
+    cursor = now
+    used = False
+    for start, end, mm in ordered:
+        if end > cursor:
+            continue          # overlaps a span we've already counted -> skip
+        total += mm
+        cursor = start
+        used = True
+    return total if used else None
+
+
 def _accumulate_precip(data, hours, now):
-    """Pure helper (no network) so it can be unit-tested with a fixture."""
+    """Pure helper (no network) so it can be unit-tested with a fixture.
+
+    Precedence, in order:
+      1. Hourly `precipitationLastHour`, bucketed by clock-hour (max within an
+         hour) so sub-hourly obs don't double-count. Authoritative when present.
+      2. If NO hourly value is reported anywhere in the window, fall back to the
+         coarser 3-/6-hour synoptic totals, tiled without overlap. Summing only
+         the hourly group made stations that never emit it read a flat 0.0 even
+         while it poured.
+      3. With no precip value at all: 0.0 (dry) if the station was reporting but
+         quiet; None if there were no observations (a true gap); and None -- not
+         a false 0.0 -- if present weather says it is precipitating at the
+         station, since a rain-inhibit rule must not resolve to "dry" mid-storm.
+    """
     cutoff = now - timedelta(hours=hours)
-    buckets = {}  # "YYYY-MM-DDTHH" -> max mm reported in that hour
-    saw_obs = False  # did the station report ANY observation in the window?
+    buckets = {}             # "YYYY-MM-DDTHH" -> max mm reported in that hour
+    coarse = []              # (start, end, mm) 3h/6h totals, fallback only
+    saw_obs = False          # station reported ANY observation in the window?
+    saw_precip_value = False # ...carrying a non-null precip value (has a gauge)?
+    precip_indicated = False # present weather says it's precipitating here now
+
     for feat in data.get("features", []):
         p = feat.get("properties", {})
         ts = p.get("timestamp")
@@ -1228,26 +1279,42 @@ def _accumulate_precip(data, hours, now):
             continue
         if when < cutoff:
             continue
+        # Parse to UTC so the same instant written with different offsets can't
+        # land in two buckets and double-count.
+        when = when.astimezone(timezone.utc)
         saw_obs = True
+        if detect_raining(p) is True:
+            precip_indicated = True
+
         plh = p.get("precipitationLastHour") or {}
         mm = to_mm(plh.get("value"), plh.get("unitCode"))
-        if mm is None:
-            continue  # this hour reported a null precip value -> no rain that hour
-        # Bucket by the parsed UTC hour, not the raw string, so the same instant
-        # written with different timezone offsets can't land in two buckets and
-        # double-count.
-        key = when.astimezone(timezone.utc).strftime("%Y-%m-%dT%H")
-        buckets[key] = max(buckets.get(key, 0.0), mm)
+        if mm is not None:
+            saw_precip_value = True
+            key = when.strftime("%Y-%m-%dT%H")
+            buckets[key] = max(buckets.get(key, 0.0), mm)
 
+        for field, span in _COARSE_PRECIP_FIELDS:
+            cmm = to_mm((p.get(field) or {}).get("value"),
+                        (p.get(field) or {}).get("unitCode"))
+            if cmm is not None:
+                saw_precip_value = True
+                coarse.append((when - span, when, cmm))
+
+    # 1. Hourly group -- authoritative when the station reports it.
     if buckets:
         return mm_to_in(sum(buckets.values()))
-    # No precip *values* this window. Distinguish two very different cases:
-    #   - the station WAS reporting observations, all with a null
-    #     precipitationLastHour -> that is how most ASOS stations report "no
-    #     measurable rain", so it means 0.0 (dry) and the rule can resolve.
-    #   - we saw NO observations at all (station down / gap) -> data is genuinely
-    #     unavailable, so return None and let the rule hold its last state.
-    return 0.0 if saw_obs else None
+
+    # 2. Fall back to the coarser synoptic totals.
+    total_mm = _tile_coarse_precip(coarse, now)
+    if total_mm is not None:
+        return mm_to_in(total_mm)
+
+    # 3. No precip value anywhere in the window.
+    if not saw_obs:
+        return None                       # no observations -> true data gap
+    if precip_indicated and not saw_precip_value:
+        return None                       # raining, but the station has no gauge
+    return 0.0                            # station reporting, all dry
 
 
 def fetch_conditions(loc, user_agent, lookback_hours):

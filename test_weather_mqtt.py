@@ -94,6 +94,71 @@ def test_accumulation_dry_vs_no_data():
     assert w._accumulate_precip(stale, 24, now) is None
 
 
+def _obs6(ts, mm, unit="wmoUnit:mm"):
+    """Observation with a null hourly group but a 6-hour synoptic total."""
+    return {"properties": {"timestamp": ts,
+                           "precipitationLastHour": {"value": None},
+                           "precipitationLast6Hours": {"value": mm,
+                                                       "unitCode": unit}}}
+
+
+def test_accumulation_falls_back_to_coarse_totals():
+    # A station that never emits the hourly group (null every hour) but does
+    # report the 6-hour synoptic total must NOT read a flat 0.0 -- that was the
+    # bug that showed 0 in over 24h during a downpour. Sum the coarse totals.
+    now = datetime(2026, 6, 27, 18, 10, tzinfo=timezone.utc)
+    data = {"features": [
+        _obs6("2026-06-27T18:05:00+00:00", 20.0),   # covers 12:05-18:05
+        _obs6("2026-06-27T12:05:00+00:00", 5.0),    # covers 06:05-12:05
+        _obs6("2026-06-27T06:05:00+00:00", 0.0),    # covers 00:05-06:05
+    ]}
+    # 25.0 mm across the tiled 6h windows = 0.98 in, despite every hourly null.
+    assert w._accumulate_precip(data, 24, now) == round(25.0 / 25.4, 2)
+
+
+def test_accumulation_coarse_totals_do_not_double_count():
+    # At one obs the station reports BOTH a 6h and a 3h total; the 3h span is a
+    # subset of the 6h span, so only the 6h total counts (not their sum).
+    now = datetime(2026, 6, 27, 12, 10, tzinfo=timezone.utc)
+    data = {"features": [{"properties": {
+        "timestamp": "2026-06-27T12:05:00+00:00",
+        "precipitationLastHour": {"value": None},
+        "precipitationLast6Hours": {"value": 10.0, "unitCode": "wmoUnit:mm"},
+        "precipitationLast3Hours": {"value": 7.0, "unitCode": "wmoUnit:mm"},
+    }}]}
+    assert w._accumulate_precip(data, 24, now) == round(10.0 / 25.4, 2)
+
+
+def test_accumulation_prefers_measurement_over_present_weather():
+    # Present weather says rain, but the station also reports a real coarse
+    # total -> use the measurement, not the None "unknown" path.
+    now = datetime(2026, 6, 27, 12, 10, tzinfo=timezone.utc)
+    data = {"features": [{"properties": {
+        "timestamp": "2026-06-27T12:05:00+00:00",
+        "textDescription": "Rain",
+        "precipitationLastHour": {"value": None},
+        "precipitationLast6Hours": {"value": 12.7, "unitCode": "wmoUnit:mm"},
+    }}]}
+    assert w._accumulate_precip(data, 24, now) == 0.5
+
+
+def test_accumulation_raining_but_no_gauge_reads_unknown():
+    # The reported failure: it is visibly pouring, the station is reporting
+    # observations, but every precip field is null (no usable gauge). A flat 0.0
+    # would be a dangerous false-dry, so the metric must read unknown (None) and
+    # let the rain-inhibit rule hold its last state instead of allowing water.
+    now = datetime(2026, 6, 27, 12, 0, tzinfo=timezone.utc)
+    data = {"features": [
+        {"properties": {"timestamp": "2026-06-27T11:53:00+00:00",
+                        "textDescription": "Heavy Rain",
+                        "precipitationLastHour": {"value": None}}},
+        {"properties": {"timestamp": "2026-06-27T10:53:00+00:00",
+                        "textDescription": "Rain",
+                        "precipitationLastHour": {"value": None}}},
+    ]}
+    assert w._accumulate_precip(data, 24, now) is None
+
+
 def test_detect_raining():
     assert w.detect_raining({"textDescription": "Light Rain"}) is True
     assert w.detect_raining({"presentWeather": [{"weather": "drizzle"}]}) is True
