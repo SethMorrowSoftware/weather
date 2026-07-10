@@ -1428,6 +1428,81 @@ def test_mqtt_console_buffer_and_publish():
     assert ok and err is None and con._client.calls[0][0][0] == "facility/cmd"
 
 
+def test_mqtt_console_latest_lookup():
+    # latest(topic) returns the live value a subscriber currently holds on an
+    # exact topic (newest wins), a defensive copy, and None when nothing's seen.
+    try:
+        import webui
+    except Exception as e:
+        raise _skip_if_optional(e)
+    con = webui.MqttConsole()
+    assert con.latest("irrigation/rain_inhibit") is None       # nothing seen yet
+    assert con.latest("") is None and con.latest(None) is None
+    con.record("irrigation/rain_inhibit", b"INHIBIT", qos=1, retain=True)
+    con.record("irrigation/rain_inhibit", b"ALLOW", qos=1, retain=False)   # newer wins
+    v = con.latest("irrigation/rain_inhibit")
+    assert v["payload"] == "ALLOW" and v["retain"] is False
+    # a returned copy must not let a caller mutate the console's internal map
+    v["payload"] = "TAMPERED"
+    assert con.latest("irrigation/rain_inhibit")["payload"] == "ALLOW"
+
+
+def test_webui_state_mirrors_bus_value():
+    # /api/state annotates each rule with the live value its topic holds on the
+    # broker (bus_payload/retain/ts) so a value published to the bus -- even by
+    # hand -- is mirrored on the dashboard and any divergence from the
+    # controller's decision is visible.
+    try:
+        import webui
+    except Exception as e:
+        raise _skip_if_optional(e)
+    import tempfile, os, json, yaml
+    from datetime import datetime, timezone
+    p = tempfile.mktemp(suffix=".yaml")
+    state = tempfile.mktemp(suffix=".json")
+    cfg = {"version": 1, "location": {"latitude": 41.0, "longitude": -74.0},
+           "user_agent": "x (a@b.com)", "poll_interval_minutes": 15,
+           "precipitation": {"lookback_hours": 24},
+           "mqtt": {"host": "localhost", "port": 1883, "qos": 1, "retain": True},
+           "web": {"enabled": True, "host": "0.0.0.0", "port": 8080,
+                   "username": "", "password": ""},
+           "state_file": state,
+           "rules": [{"name": "irrigation_rain_inhibit",
+                      "topic": "irrigation/rain_inhibit", "on_match": "INHIBIT",
+                      "on_clear": "ALLOW",
+                      "when": {"metric": "is_raining", "operator": "==", "value": True}}]}
+    open(p, "w").write(yaml.safe_dump(cfg))
+    # Monitor snapshot: the controller DECIDED ALLOW (active False -> on_clear).
+    open(state, "w").write(json.dumps({
+        "updated": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "mqtt_connected": True, "manual_control": False, "metrics": {}, "variables": [],
+        "rules": [{"name": "irrigation_rain_inhibit",
+                   "topic": "irrigation/rain_inhibit", "enabled": True,
+                   "active": False, "current_payload": "ALLOW", "last_change": None}]}))
+    webui.CONFIG_PATH = p
+    webui.app.config["TESTING"] = True
+    saved_console = webui.console
+    webui.console = webui.MqttConsole()
+    c = webui.app.test_client()
+    try:
+        # Nothing on the bus yet -> bus_payload null, but the summary is present.
+        j = c.get("/api/state").get_json()
+        assert j["bus"]["enabled"] is True
+        assert j["rules"][0]["bus_payload"] is None
+        # Someone publishes INHIBIT to the bus (retained); the console sees it.
+        webui.console.record("irrigation/rain_inhibit", b"INHIBIT", qos=1, retain=True)
+        row = c.get("/api/state").get_json()["rules"][0]
+        assert row["bus_payload"] == "INHIBIT" and row["bus_retain"] is True
+        # ...while the controller's decision is still ALLOW -> divergence is visible.
+        assert row["current_payload"] == "ALLOW"
+        assert row["bus_payload"] != row["current_payload"]
+    finally:
+        webui.console = saved_console
+        for f in (p, state):
+            try: os.unlink(f)
+            except OSError: pass
+
+
 def test_webui_mqtt_console_api_and_publish_gating():
     try:
         import webui

@@ -180,7 +180,14 @@ Run the offline logic tests (no network needed):
 - **Dashboard** — live conditions, the current irrigation directive
   (INHIBIT / ALLOW), every rule's state, and MQTT connection status. It polls
   `GET /api/state` and updates in place (no full-page reloads), reading the
-  snapshot the monitor writes to `weather_state.json` each cycle.
+  snapshot the monitor writes to `weather_state.json` each cycle. Alongside the
+  controller's **decision**, each rule (and the headline directive) also shows
+  the **live value its topic currently holds on the broker** — an `on bus: …`
+  line sourced from the web UI's MQTT subscription. If the two disagree — e.g.
+  someone published to the topic by hand and the monitor hasn't overwritten it —
+  the bus value is flagged `≠ decision`, so what a subscriber/PLC actually
+  receives is always visible, not just what the controller intended. (Requires
+  the MQTT console subscription, on by default; `web.mqtt_console_enabled`.)
 - **Settings** — friendly, range-validated form for **location**, station,
   user-agent, poll interval, rain lookback window, the **MQTT broker** (host,
   port, credentials, client id, QoS, retain, status topic), and the **web

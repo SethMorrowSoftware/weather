@@ -252,6 +252,16 @@ class MqttConsole:
         with self._lock:
             return [dict(topic=t, **v) for t, v in sorted(self._latest.items())]
 
+    def latest(self, topic):
+        """Most recent value seen on an exact topic -- the live value a subscriber
+        currently holds (a retained directive shows up here as soon as the console
+        subscribes). None if nothing has arrived on that topic yet."""
+        if not topic:
+            return None
+        with self._lock:
+            v = self._latest.get(topic)
+            return dict(v) if v else None
+
     def stats(self):
         with self._lock:
             return {"connected": self._connected, "buffered": len(self._buf),
@@ -462,6 +472,7 @@ BASE = """
  .on{background:#3a1115;color:#fda4af;box-shadow:0 0 0 1px #7f1d1d inset}
  .off{background:#0f2e1c;color:#86efac;box-shadow:0 0 0 1px #14532d inset}
  .na{background:#1c2740;color:#cdd9ec;box-shadow:0 0 0 1px #2c3c5a inset}
+ .warn{background:#3a2a0f;color:#fcd34d;box-shadow:0 0 0 1px #78440d inset}
  label{display:block;font-size:13px;color:var(--muted);margin:14px 0 6px;font-weight:600}
  .hint{font-weight:400;color:var(--muted2)}
  input,textarea,select{width:100%;background:#0a1322;color:var(--ink);border:1px solid var(--line);border-radius:var(--r);padding:10px 12px;font-size:14px;font-family:inherit;transition:border-color var(--t),box-shadow var(--t),background var(--t)}
@@ -556,6 +567,7 @@ DASH = """
     <div class="eyebrow">Headline device</div>
     <div class="big unknown" id="directive">…</div>
     <div class="muted" id="directive-sub">Loading current conditions…</div>
+    <div class="muted" id="directive-bus" style="margin-top:6px"></div>
   </div>
 
   <div class="card">
@@ -608,6 +620,28 @@ function agoText(iso){
   if(s<5) return "just now"; if(s<60) return s+"s ago";
   if(s<3600) return Math.round(s/60)+"m ago"; return Math.round(s/3600)+"h ago";
 }
+// The live value the rule's topic currently holds on the broker (what a
+// subscriber/PLC sees), with a warning when it differs from what the controller
+// decided -- e.g. a value someone published by hand that the monitor hasn't
+// overwritten yet.
+function busText(r, s){
+  const bus = s.bus || {};
+  if(bus.enabled === false) return "";
+  if(r.bus_payload === null || r.bus_payload === undefined){
+    return bus.connected ? 'on bus: <span class="muted">no value yet</span>'
+                         : 'on bus: <span class="muted">console offline</span>';
+  }
+  // Note on retain: the flag is only set when the broker replays a retained
+  // message to a NEW subscriber, so a value published after the console already
+  // subscribed reads as non-retained even though it is retained on the broker.
+  // We therefore don't render a (misleading) "retained" badge -- the value,
+  // freshness and any divergence are the useful signals.
+  const dec = (r.current_payload != null) ? String(r.current_payload) : null;
+  const diff = (dec !== null && String(r.bus_payload) !== dec);
+  const warn = diff ? ' <span class="pill warn">≠ decision '+esc(dec)+'</span>' : '';
+  const when = r.bus_ts ? ' · '+agoText(r.bus_ts) : '';
+  return 'on bus: <code>'+esc(r.bus_payload)+'</code>'+warn+when;
+}
 
 function render(s){
   const conn = document.getElementById("connstate");
@@ -618,6 +652,7 @@ function render(s){
     if(card) card.className = "card state-unknown";
     setText("directive","NO DATA");
     setText("directive-sub","No snapshot yet — see Getting started above.");
+    setText("directive-bus","");
     conn.innerHTML = '<span class="dot idle"></span>no monitor data';
     if(gs) gs.style.display = "";
     const grid = document.getElementById("devicegrid");
@@ -664,6 +699,8 @@ function render(s){
     setText("directive","UNKNOWN");
     setText("directive-sub", irr ? "Waiting on data…" : "No rules configured.");
   }
+  const dbus = document.getElementById("directive-bus");
+  if(dbus) dbus.innerHTML = irr ? busText(irr, s) : "";
   if(card) card.className = "card state-" + st;
 
   const m = s.metrics || {};
@@ -701,6 +738,8 @@ function render(s){
     html += '<div class="muted" style="font-size:12px">topic <code>'+esc(r.topic)+'</code></div>';
     html += '<div class="muted" style="font-size:12px">payload '+(r.current_payload!=null?esc(r.current_payload):"—")+
             ' · changed '+esc(agoText(r.last_change))+'</div>';
+    const bt = busText(r, s);
+    if(bt) html += '<div class="muted" style="font-size:12px">'+bt+'</div>';
     if(manualControl && r.enabled !== false) html += ctlButtons(r);
     cell.innerHTML = html;
     grid.appendChild(cell);
@@ -810,11 +849,27 @@ def api_state():
     """JSON snapshot the dashboard polls. 503 (not 500) when no data yet so the
     client can show a friendly 'waiting on monitor' state."""
     try:
-        state = load_state(load_raw())
+        cfg = load_raw()
     except Exception as e:
         return jsonify({"error": f"config unreadable: {e}"}), 500
+    state = load_state(cfg)
     if state is None:
         return jsonify({"error": "no state yet"}), 503
+    # Mirror the live value each rule's topic currently holds on the broker (what a
+    # subscriber/PLC actually sees) alongside the controller's own decision. The
+    # console already subscribes to the bus, so a value published by anything --
+    # the monitor, another device, or a hand `mosquitto_pub` -- is reflected here,
+    # and any divergence from the decided payload is made visible on the dashboard.
+    web = cfg.get("web", {}) or {}
+    console_on = bool(web.get("mqtt_console_enabled", True))
+    for r in state.get("rules", []):
+        live = console.latest(r.get("topic")) if console_on else None
+        r["bus_payload"] = None if live is None else live["payload"]
+        r["bus_retain"] = None if live is None else bool(live.get("retain"))
+        r["bus_ts"] = None if live is None else live.get("ts")
+        r["bus_binary"] = bool(live.get("binary")) if live else False
+    state["bus"] = {"enabled": console_on,
+                    "connected": bool(console.stats().get("connected"))}
     return jsonify(state)
 
 
