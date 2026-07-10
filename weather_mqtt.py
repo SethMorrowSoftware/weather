@@ -2521,6 +2521,25 @@ def push_status(cfg, snapshot):
         return False
 
 
+def reassert_retained_status(client, status_topic, payload, qos, retain):
+    """Re-publish the last status snapshot to the broker after a reconnect.
+
+    A broker restart drops every retained message; rule directives and the
+    availability topic are already re-asserted on reconnect, but the retained
+    status snapshot would otherwise stay gone until the next weather fetch (a
+    whole poll interval). This puts it back immediately. Best-effort and
+    idempotent (the payload is retained); a no-op when there's nothing to assert
+    or no status topic configured. Returns True on a successful publish."""
+    if client is None or not status_topic or payload is None:
+        return False
+    info = client.publish(status_topic, payload, qos=qos, retain=retain)
+    if getattr(info, "rc", 0) != mqtt.MQTT_ERR_SUCCESS:
+        LOG.warning("Status re-assert to %s returned rc=%s",
+                    status_topic, getattr(info, "rc", "?"))
+        return False
+    return True
+
+
 # ---------------------------------------------------------------------------
 # Rule actions: extra things to do on a device's on/off transition.
 # Beyond the built-in `topic`/`on_match`/`on_clear` publish, a rule may declare
@@ -2779,6 +2798,11 @@ def main():
     # re-evaluation reuses it instead of re-fetching (and hammering the API).
     weather_cache = None
     next_weather_at = 0.0      # monotonic deadline for the next weather fetch
+    # Last status snapshot published to status_topic (JSON string), kept so it can
+    # be re-asserted after a broker reconnect -- a restart drops the retained copy,
+    # and it would otherwise stay gone until the next weather fetch (a whole poll
+    # interval later) while the directives recover in seconds.
+    last_status_payload = None
     EVENT_DEBOUNCE = 0.4       # s: coalesce a burst of messages into one re-eval
 
     while not stop["flag"]:
@@ -2835,13 +2859,26 @@ def main():
                          m["is_raining"], lookback, m["precip_accum_in"],
                          m["precipitation_probability"], m["short_forecast"],
                          m["active_alerts"] or "none")
-                if client is not None and status_topic:
-                    sinfo = client.publish(status_topic, json.dumps(m),
-                                           qos=qos, retain=retain)
-                    if getattr(sinfo, "rc", 0) != mqtt.MQTT_ERR_SUCCESS:
-                        LOG.warning("Status publish to %s returned rc=%s "
-                                    "(broker offline?)", status_topic,
-                                    getattr(sinfo, "rc", "?"))
+                if status_topic:
+                    # Stamp the snapshot with the fetch time so a pure-MQTT
+                    # consumer (SCADA/PLC) can tell live data from a stale/wedged
+                    # controller: the LWT only fires on a dropped connection, not a
+                    # hung main loop, so a frozen-but-connected monitor would
+                    # otherwise leave a stale retained status looking current
+                    # forever. Kept verbatim so a reconnect re-asserts the SAME
+                    # timestamp (the data really is from then), not a
+                    # misleadingly-fresh one.
+                    status_obj = dict(m)
+                    status_obj["generated_at"] = datetime.now(
+                        timezone.utc).isoformat(timespec="seconds")
+                    last_status_payload = json.dumps(status_obj)
+                    if client is not None:
+                        sinfo = client.publish(status_topic, last_status_payload,
+                                               qos=qos, retain=retain)
+                        if getattr(sinfo, "rc", 0) != mqtt.MQTT_ERR_SUCCESS:
+                            LOG.warning("Status publish to %s returned rc=%s "
+                                        "(broker offline?)", status_topic,
+                                        getattr(sinfo, "rc", "?"))
             else:
                 m = dict(weather_cache)
 
@@ -2874,6 +2911,14 @@ def main():
                     ev.clear()
                     republish = True
                     LOG.info("Re-asserting retained directives after (re)connect")
+                    # A broker restart also drops the retained status snapshot. The
+                    # rule directives are re-asserted below and availability is
+                    # re-published by on_connect; put the status snapshot back too so
+                    # status subscribers recover as fast as the directives do. Skip
+                    # when we already published a fresh one this cycle (do_fetch).
+                    if not do_fetch:
+                        reassert_retained_status(client, status_topic,
+                                                 last_status_payload, qos, retain)
 
             rule_rows = []
             for rule in rules:

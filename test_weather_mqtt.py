@@ -2428,6 +2428,88 @@ def test_engine_state_persists_and_republishes_across_restart():
                 except OSError: pass
 
 
+def test_reassert_retained_status_helper():
+    # After a broker reconnect the last status snapshot must be re-published
+    # verbatim (a broker restart drops every retained message). It is a no-op
+    # when there is nothing to assert, and reports failure on a non-success rc.
+    class _Info:
+        def __init__(self, rc=0): self.rc = rc
+
+    class _C:
+        def __init__(self, rc=0): self.pubs = []; self._rc = rc
+        def publish(self, topic, payload, qos=0, retain=False):
+            self.pubs.append((topic, payload, qos, retain)); return _Info(self._rc)
+
+    c = _C()
+    payload = '{"is_raining": true, "generated_at": "2026-07-10T00:00:00+00:00"}'
+    assert w.reassert_retained_status(c, "irr/weather/status", payload, 1, True) is True
+    assert c.pubs == [("irr/weather/status", payload, 1, True)]   # published verbatim
+    # No-ops: no client, no configured topic, or nothing cached to re-assert yet.
+    assert w.reassert_retained_status(None, "t", payload, 1, True) is False
+    assert w.reassert_retained_status(c, "", payload, 1, True) is False
+    assert w.reassert_retained_status(c, "t", None, 1, True) is False
+    assert len(c.pubs) == 1                                       # none of those published
+    # Broker dropped again mid-reassert -> non-success rc -> reported as failure.
+    assert w.reassert_retained_status(_C(rc=4), "t", payload, 1, True) is False
+
+
+def test_status_topic_carries_freshness_stamp():
+    # Every status snapshot published to status_topic must carry a generated_at
+    # timestamp (plus the live weather) so a pure-MQTT consumer can detect a
+    # stale/hung controller instead of trusting a frozen retained snapshot.
+    import tempfile, os, sys, threading, json, yaml
+    p = tempfile.mktemp(suffix=".yaml")
+    state = tempfile.mktemp(suffix=".json"); aud = tempfile.mktemp(suffix=".log")
+    logf = tempfile.mktemp(suffix=".log"); esf = tempfile.mktemp(suffix=".json")
+    cfg = {"version": 1, "location": {"latitude": 41.0, "longitude": -74.0},
+           "user_agent": "x (a@b.com)", "poll_interval_minutes": 15,
+           "precipitation": {"lookback_hours": 24},
+           "mqtt": {"host": "localhost", "port": 1883, "qos": 1, "retain": True,
+                    "availability_topic": "", "status_topic": "irr/weather/status"},
+           "state_file": state, "audit_file": aud, "log_file": logf,
+           "engine_state_file": esf, "history": {"enabled": False},
+           "rules": [{"name": "rainflag", "topic": "facility/rain",
+                      "on_match": "ON", "on_clear": "OFF",
+                      "when": {"metric": "is_raining", "operator": "==",
+                               "value": True}}]}
+    open(p, "w").write(yaml.safe_dump(cfg))
+    orig = (w.resolve_location, w.fetch_conditions, w.make_mqtt_client, sys.argv)
+    pubs = []
+
+    class _Info: rc = 0
+    class _Fake:
+        def __init__(self):
+            self.in_lock = threading.Lock()
+            self.republish_event = threading.Event()
+        def publish(self, topic, payload, **k): pubs.append((topic, payload)); return _Info()
+        def is_connected(self): return True
+        def connect_async(self, *a, **k): pass
+        def loop_start(self): pass
+        def loop_stop(self): pass
+        def disconnect(self): pass
+    try:
+        w.resolve_location = lambda *a, **k: {"office": "x"}
+        w.fetch_conditions = lambda *a, **k: {
+            "temperature": 60.0, "humidity": 80.0, "wind_speed_mph": 5.0,
+            "is_raining": True, "precip_accum_in": 0.3,
+            "precipitation_probability": 90.0, "short_forecast": "Rain",
+            "active_alerts": []}
+        w.make_mqtt_client = lambda *a, **k: _Fake()
+        sys.argv = ["weather_mqtt", "--config", p, "--once"]
+        w.main()
+        status = [pl for tp, pl in pubs if tp == "irr/weather/status"]
+        assert status, "status snapshot must be published to status_topic"
+        obj = json.loads(status[-1])
+        assert obj.get("generated_at"), "status snapshot must carry generated_at"
+        assert obj["is_raining"] is True and obj["precip_accum_in"] == 0.3
+    finally:
+        w.resolve_location, w.fetch_conditions, w.make_mqtt_client, sys.argv = orig
+        for f in (p, state, aud, logf, esf):
+            for s in ("", ".bak", ".tmp"):
+                try: os.unlink(f + s)
+                except OSError: pass
+
+
 def test_webui_request_size_cap_configured():
     try:
         import webui

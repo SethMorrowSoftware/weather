@@ -114,8 +114,11 @@ mqtt:
   client_id: "weather-mqtt-controller"
   qos: 1
   retain: true           # broker keeps the last value for new subscribers
-  # Optional: publish a JSON snapshot of all conditions here each cycle
-  # (handy for dashboards / SCADA debugging). Leave "" to disable.
+  # Optional: publish a JSON snapshot of all conditions here each cycle (handy
+  # for dashboards / SCADA debugging). Leave "" to disable. The snapshot is
+  # retained and carries a `generated_at` UTC timestamp, so a subscriber can spot
+  # a stale/hung controller (the Last Will only fires on a dropped connection,
+  # not a wedged main loop). It is re-asserted on reconnect after a broker restart.
   status_topic: "irrigation/weather/status"
   # Retained online/offline availability topic + MQTT Last Will. The controller
   # publishes "online" on connect and (via the LWT) "offline" if it dies
