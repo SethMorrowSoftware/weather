@@ -118,9 +118,9 @@ def main():
         if first_feats is None:
             first_feats = feats
         st = w._precip_stats(data, hours, now)
-        usable = st["inches"] is not None and st["coverage"] >= w.MIN_PRECIP_COVERAGE
+        resolved, usable = w._resolve_station_precip(st)
         verdict = "USE (gauge OK)" if usable else "skip (no usable gauge)"
-        inches = "-" if st["inches"] is None else f"{st['inches']:.2f}"
+        inches = "-" if resolved is None else f"{resolved:.2f}"
         print(f"{sid:8} {len(feats):>4} {st['coverage']*100:>8.0f}% "
               f"{inches:>10}  {verdict}")
         if usable and chosen is None:

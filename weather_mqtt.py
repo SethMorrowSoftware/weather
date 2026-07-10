@@ -708,11 +708,14 @@ MIN_POLL_MINUTES = 1
 MIN_LOOKBACK_HOURS = 1
 MAX_LOOKBACK_HOURS = 720      # 30 days; NWS observation history is limited anyway
 
-# A station is only trusted for accumulation if its precip reports actually
-# cover this fraction of the lookback window. It cleanly separates a working
-# gauge (~100% coverage, reports every hour incl. 0.0) from a broken/absent one
-# like an ASOS that shows +RA in every METAR yet reports precip on almost no
-# observations -- that station reads a bogus 0.0 and must be skipped.
+# Diagnostic-only signal (see check_rain.py): the fraction of the lookback
+# window a station's non-null precip reports span. It reads high only for a
+# station that reports a value EVERY hour incl. 0.0 -- which most real NWS
+# stations do NOT do (they report null on dry hours), so coverage tracks "how
+# wet was the window", not gauge health, and must NOT gate trust. A station's
+# gauge is judged dead by the rain-vs-measured mismatch instead (see
+# _resolve_station_precip): present weather shows precipitation, yet the gauge
+# measured nothing.
 MIN_PRECIP_COVERAGE = 0.5
 # How many nearest-first stations to try before giving up (keeps a storm from
 # fanning out into dozens of requests against the free API).
@@ -1357,23 +1360,46 @@ def _precip_stats(data, hours, now):
             "saw_obs": saw_obs, "raining": raining}
 
 
+def _resolve_station_precip(st):
+    """Turn one station's `_precip_stats` into (inches, usable).
+
+    `inches` is the accumulation to trust for this station (may be 0.0), or None
+    when precip is unknown; `usable` says whether to trust it and stop the
+    nearest-first station walk.
+
+    A station's gauge is judged dead by a rain-vs-measured mismatch -- present
+    weather shows precipitation, yet the gauge measured nothing -- NOT by how
+    much of the window its reports span. Real NWS stations report a value only
+    during precip and null when dry, so a coverage threshold rejected every
+    normal station and pinned precip_accum_in at "unknown" forever.
+    """
+    inches = st["inches"]
+    if inches is not None:
+        # A gauge that measured nothing while present weather shows precip is
+        # dead/absent -- its 0.0 is a false-dry, so distrust it (try the next
+        # station). Any real measurement (>= 0.01 in after rounding) is trusted.
+        if st["raining"] and inches <= 0.0:
+            return None, False
+        return inches, True
+    # No precip value at all in the window.
+    if not st["saw_obs"]:
+        return None, False                # no observations -> true data gap
+    if st["raining"]:
+        return None, False                # raining, but the station has no gauge
+    return 0.0, True                      # station reporting, all dry -> trust 0.0
+
+
 def _accumulate_precip(data, hours, now):
     """Single-station accumulation in inches, or None when precip is unknown.
 
     Pure helper (no network) so it can be unit-tested with a fixture. Returns
-    the measured accumulation when the station reported any precip value; 0.0
-    when it was reporting but quiet (dry); and None -- so a rule holds its last
-    state instead of wrongly reading "dry" -- when there were no observations at
-    all, or it is visibly precipitating but the station reports no gauge value.
+    the measured accumulation when the station has a trustworthy gauge reading;
+    0.0 when it was reporting but quiet (dry); and None -- so a rule holds its
+    last state instead of wrongly reading "dry" -- when there were no
+    observations at all, or it is visibly precipitating but the station reports
+    no usable gauge value.
     """
-    st = _precip_stats(data, hours, now)
-    if st["inches"] is not None:
-        return st["inches"]
-    if not st["saw_obs"]:
-        return None                       # no observations -> true data gap
-    if st["raining"]:
-        return None                       # raining, but the station has no gauge
-    return 0.0                            # station reporting, all dry
+    return _resolve_station_precip(_precip_stats(data, hours, now))[0]
 
 
 def fetch_precip_accum_in(station_id, user_agent, hours, now=None):
@@ -1389,13 +1415,14 @@ def fetch_precip_accum_in(station_id, user_agent, hours, now=None):
 def fetch_precip_accum_best(station_ids, user_agent, hours, now=None,
                             max_stations=MAX_FALLBACK_STATIONS):
     """Measured precip over the last `hours`, walking `station_ids` nearest-first
-    until one has a gauge that actually covers the window.
+    until one has a trustworthy gauge reading.
 
-    Returns (inches, station_id). A station whose observations show rain but
-    report precip on almost none of them -- a dead/absent gauge, e.g. some ASOS
-    sites -- has too little coverage to trust, so it is skipped for the next
-    nearest station rather than publishing its bogus 0.0. If no station in range
-    reports usable data, returns (None, None) so the rule holds its last state.
+    Returns (inches, station_id). A station whose present weather shows rain but
+    whose gauge measured nothing -- a dead/absent gauge, e.g. some ASOS sites --
+    is skipped for the next nearest station rather than publishing its bogus 0.0
+    (see _resolve_station_precip). A station that is simply reporting a dry
+    window is trusted at 0.0. If no station in range reports usable data,
+    returns (None, None) so the rule holds its last state.
     """
     now = now or datetime.now(timezone.utc)
     candidates = [s for s in (station_ids or []) if s][:max_stations]
@@ -1411,15 +1438,16 @@ def fetch_precip_accum_best(station_ids, user_agent, hours, now=None,
             continue
         tried.append(sid)
         st = _precip_stats(data, hours, now)
-        if st["inches"] is not None and st["coverage"] >= MIN_PRECIP_COVERAGE:
+        inches, usable = _resolve_station_precip(st)
+        if usable:
             if sid != primary:
                 LOG.info("Precip: %s lacked a usable gauge; using nearby %s "
                          "(coverage %.0f%%) -> %.2f in",
-                         primary, sid, st["coverage"] * 100, st["inches"])
-            return st["inches"], sid
+                         primary, sid, st["coverage"] * 100, inches)
+            return inches, sid
         LOG.info("Precip: station %s not usable for accumulation "
-                 "(coverage %.0f%%, raining=%s); trying next",
-                 sid, st["coverage"] * 100, st["raining"])
+                 "(coverage %.0f%%, raining=%s, measured=%s); trying next",
+                 sid, st["coverage"] * 100, st["raining"], st["inches"])
     LOG.warning("Precip: no station within range reported usable accumulation "
                 "(tried %s); holding last state", ", ".join(tried) or "none")
     return None, None

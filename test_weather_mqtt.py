@@ -62,6 +62,24 @@ def _hourly_gauge_obs(now, hours=24, wet_hours=3, wet_mm=2.54):
     return feats
 
 
+def _realistic_gauge_obs(now, hours=24, wet_hours=0, wet_mm=2.54, start_hour=6):
+    """How real NWS stations actually report: a precipitationLastHour value ONLY
+    during precip hours, and *null* on dry hours (not 0.0). `wet_hours` of
+    `wet_mm` in a block starting `start_hour` back set the total; the rest of the
+    window is dry-null. This is the shape that made coverage collapse below 50%
+    and wrongly reject good stations in production."""
+    feats = []
+    for k in range(hours):
+        t = now - _td(hours=k)
+        wet = start_hour <= k < start_hour + wet_hours
+        feats.append({"properties": {
+            "timestamp": t.isoformat(),
+            "textDescription": "Rain" if wet else "Fair",
+            "precipitationLastHour": {"value": (wet_mm if wet else None),
+                                      "unitCode": "wmoUnit:mm"}}})
+    return feats
+
+
 def _fake_nws(station_data):
     """Stand-in for w.nws_get that dispatches on the station id in the URL."""
     def _get(url, ua, **kw):
@@ -252,6 +270,50 @@ def test_precip_fallback_all_dead_returns_none():
         w.nws_get = real
     assert used is None            # nobody usable -> hold last state
     assert inches is None
+
+
+def test_precip_real_gauge_reporting_null_when_dry_is_usable():
+    # Regression: a healthy station that reports precip only during rain and null
+    # on dry hours (how real NWS stations report) spans well under 50% of the
+    # window. The old coverage gate rejected it, so precip_accum_in was stuck at
+    # None forever. It must now be trusted and return the measured total.
+    now = datetime(2026, 7, 10, 19, 20, tzinfo=timezone.utc)
+    feats = _realistic_gauge_obs(now, 24, wet_hours=4, wet_mm=2.54, start_hour=8)
+    st = w._precip_stats({"features": feats}, 24, now)
+    assert st["coverage"] < w.MIN_PRECIP_COVERAGE      # would fail the old gate
+    inches, usable = w._resolve_station_precip(st)
+    assert usable is True
+    assert inches == round(4 * 2.54 / 25.4, 2)         # 0.40 in, measured
+    data = {"KMGJ": {"features": feats}}
+    real = w.nws_get
+    w.nws_get = _fake_nws(data)
+    try:
+        got, used = w.fetch_precip_accum_best(["KMGJ"], "ua", 24, now)
+    finally:
+        w.nws_get = real
+    assert used == "KMGJ"
+    assert got == round(4 * 2.54 / 25.4, 2)
+
+
+def test_precip_genuinely_dry_reads_zero_not_unknown():
+    # Regression (the stuck-"INHIBIT" report): when it is simply dry -- stations
+    # reporting, precip null every hour, no present weather -- accumulation must
+    # resolve to 0.0 so the rain-inhibit rule can re-evaluate and clear, not stay
+    # None and hold a stale INHIBIT indefinitely.
+    now = datetime(2026, 7, 10, 19, 20, tzinfo=timezone.utc)
+    dry = _realistic_gauge_obs(now, 24, wet_hours=0)   # all dry-null, "Fair"
+    st = w._precip_stats({"features": dry}, 24, now)
+    assert st["raining"] is False
+    assert st["inches"] is None                        # no non-null precip value
+    data = {"KMGJ": {"features": dry}}
+    real = w.nws_get
+    w.nws_get = _fake_nws(data)
+    try:
+        inches, used = w.fetch_precip_accum_best(["KMGJ"], "ua", 24, now)
+    finally:
+        w.nws_get = real
+    assert used == "KMGJ"
+    assert inches == 0.0
 
 
 def test_resolve_location_builds_nearest_first_station_list():

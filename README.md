@@ -702,8 +702,10 @@ MIT — see [`LICENSE`](LICENSE).
   usable precipitation even mid-storm. The monitor falls back through the
   hourly → 3-/6-hour groups, then to the next-nearest **stations**
   (`precipitation.station_fallback`, up to `max_fallback_stations`), until one
-  has a gauge that covers the window. Run `python check_rain.py` to see each
-  candidate's coverage and which station it picks. If `precip_accum_in` still
+  has a trustworthy gauge reading — a real measured value, or a genuine dry 0.0.
+  A station is skipped only when its present weather shows precipitation yet its
+  gauge measured nothing (a dead/absent gauge). Run `python check_rain.py` to
+  see each candidate and which station it picks. If `precip_accum_in` still
   reads `None` during rain, widen `max_fallback_stations` or pin a known-good
   `location.station_id`.
 - **Retained messages:** `retain: true` means the broker holds each topic's last
