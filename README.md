@@ -710,8 +710,18 @@ MIT — see [`LICENSE`](LICENSE).
   `location.station_id`.
 - **Retained messages:** `retain: true` means the broker holds each topic's last
   value, so a PLC that connects later immediately gets the current state.
-- **Broker restarts:** set `always_publish: true` to re-send every rule's state
-  each cycle as a heartbeat if your broker may drop retained values.
+- **Broker restarts:** a restart wipes every retained message. On reconnect the
+  controller immediately re-asserts all of it — the availability birth message,
+  each rule's current directive, **and** the `status_topic` snapshot — so
+  subscribers recover within seconds rather than waiting for the next poll. Set
+  `always_publish: true` if you additionally want every rule's state re-sent each
+  cycle as a periodic heartbeat.
+- **Detecting a stale/hung controller:** the `status_topic` snapshot carries a
+  `generated_at` UTC timestamp stamped at each weather fetch. Because the MQTT
+  Last Will only fires on a *dropped connection* — not a controller whose main
+  loop has wedged while the socket stays up — a pure-MQTT consumer (SCADA/PLC)
+  should treat the retained status as stale if `generated_at` stops advancing
+  past a couple of poll intervals, and fail the load to a safe state.
 - **Polling frequency:** 15 minutes is plenty — NWS observations update roughly
   hourly. Be a good citizen of a free API.
 - **Validated config:** invalid configs (bad coordinates, unknown metric or
